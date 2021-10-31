@@ -29,8 +29,8 @@ def get_train_test_split(params, data):
         
     return (data_train, data_test)
     
-
-def get_classification_type_and_set(params, data):
+    
+def get_classification_type(params, data):
     """Determines the classification type based on what the user defined or inferred by the labels
 
     Parameters
@@ -55,13 +55,27 @@ def get_classification_type_and_set(params, data):
         
         if verbose:
             print("Inferred classification type:", classification_type)
-        
-        params["classification_type"] = classification_type
             
+    return classification_type
+    
+
+def get_classification_type_and_set(params, data):
+    """Determines the classification type based on what the user defined or inferred by the labels
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    data: dataframe
+        The data
+    """
+    
+    classification_type =  get_classification_type(params, data)
+    params["classification_type"] = classification_type
     return classification_type
 
 
-def create_label_binarizer_and_set(params, data):
+def get_label_binarize(params, data):
     """Creates an initialized LabelBinarizer
 
     Parameters
@@ -76,8 +90,7 @@ def create_label_binarizer_and_set(params, data):
     from sklearn.preprocessing import MultiLabelBinarizer
     
     y_column_name = params.get("y_column_name", "label")
-    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
-    classification_type = get_classification_type_and_set(params, data)
+    classification_type = get_classification_type(params, data)
     
     if classification_type == "multi-label":
         label_binarizer = MultiLabelBinarizer()
@@ -86,10 +99,53 @@ def create_label_binarizer_and_set(params, data):
         label_binarizer = LabelBinarizer()
         _ = label_binarizer.fit(data[y_column_name])
     
-    params.setdefault(computed_objects_column_name, {})["label_binarizer"] = label_binarizer
+    return label_binarizer
 
+
+def create_label_binarizer_and_set(params, data):
+    """Creates an initialized LabelBinarizer
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    data: dataframe
+        The data
+    """
+
+    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
+    _ = get_classification_type_and_set(params, data)
+    params.setdefault(computed_objects_column_name, {})["label_binarizer"] = get_label_binarize(params, data)
+
+def compute_binarized_labels(params, data):
+    """Binarizes the labels
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    data: dataframe
+        The data
+        
+    Returns
+    -------
+    list
+        The binarized labels
+    """
     
-def dataframe_to_dataset(params, data):
+    y_column_name = params.get("y_column_name", "label")
+    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
+    label_binarizer = params[computed_objects_column_name]["label_binarizer"]
+    
+    y = label_binarizer.transform(data[y_column_name])
+    output_classes = len(label_binarizer.classes_)
+    if output_classes <= 2:
+        y = y.flatten()
+
+    return y
+    
+    
+def dataframe_to_dataset(params, data, X = None):
     """Converts a dataframe into a dataset
 
     Parameters
@@ -120,6 +176,10 @@ def dataframe_to_dataset(params, data):
     output_classes = len(label_binarizer.classes_)
     if output_classes <= 2:
         y = y.flatten()
+        
+    if X is not None:
+        data = {}
+        data[X_column_name] = next(iter(X.values()))   
     
     ds = tf.data.Dataset.from_tensor_slices((dict(data), y))
     if shuffle:
@@ -261,6 +321,31 @@ def get_embedder_fasttext(params):
     return fasttext_embedder
 
 
+def get_embedder_byte_pair(params):
+    """Provides the byte pair embedder
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    """
+        
+    from bpemb import BPEmb
+    import numpy as np
+
+    embedding_lang = params.get("embedding_lang", "de")
+    
+    bpemb = BPEmb(lang=embedding_lang)
+    
+    def byte_pair_embedder(word, order=2):
+        vec = bpemb.embed(word).sum(axis=0)
+        l2 = np.atleast_1d(np.linalg.norm(vec, order))
+        l2[l2==0] = 1
+        #return vec / np.expand_dims(l2, axis)
+        return vec / l2
+    
+    return byte_pair_embedder
+
 def get_embedder_word2vec(params):
     """Provides the word2vec embedder
 
@@ -338,32 +423,6 @@ def get_embedder_tensorflow_hub(params):
     return tensorflow_hub_embedder
 
 
-def get_embedder_byte_pair(params):
-    """Provides the byte pair embedder
-
-    Parameters
-    ----------
-    params: dict
-        The dictionary containing the parameters
-    """
-        
-    from bpemb import BPEmb
-    import numpy as np
-
-    embedding_lang = params.get("embedding_lang", "de")
-    
-    bpemb = BPEmb(lang=embedding_lang)
-    
-    def byte_pair_embedder(word, order=2):
-        vec = bpemb.embed(word).sum(axis=0)
-        l2 = np.atleast_1d(np.linalg.norm(vec, order))
-        l2[l2==0] = 1
-        #return vec / np.expand_dims(l2, axis)
-        return vec / l2
-    
-    return byte_pair_embedder
-
-
 def get_embedder(params):
     """Provides the embedder based on the params
 
@@ -422,15 +481,16 @@ def calculate_embedding_matrix(params, embedder):
             words_not_found.add(word)
 
     if params["verbose"]:
-        print("Number of null word embeddings: ", np.sum(np.sum(embedding_matrix, axis=1) == 0))
+        print("Embedding type:", params.get("embedding_type"))
+        print("Number of null word embeddings:", np.sum(np.sum(embedding_matrix, axis=1) == 0))
         nr_words_not_found = len(words_not_found)
-        print("Words not found in total: ", len(words_not_found))
+        print("Words not found in total:", len(words_not_found))
         if nr_words_not_found > 0:
             import random
             
             nr_sample = min(20, len(words_not_found))
             print("Words without embedding (", nr_sample, "/", nr_words_not_found, "): ", random.sample(words_not_found, nr_sample), sep='')
-    
+        
     return embedding_matrix
 
 
@@ -445,6 +505,7 @@ def extract_embedding_layer_and_set(params):
     
     import tensorflow as tf
     from tensorflow import keras
+    from fhnw.nlp.utils.params import install_dependencies
     
     computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
     
@@ -634,7 +695,7 @@ def build_model_rnn(params):
         rnn_units = int(rnn_units / 2)
     
     if rnn_global_max_pooling:
-        model.add(keras.layers.GlobalMaxPool1D())
+        model.add(keras.layers.GlobalMaxPool1D(name="global_max_pool"))
     
     model.add(keras.layers.Dense(rnn_units, activation=rnn_activation_function))
     
