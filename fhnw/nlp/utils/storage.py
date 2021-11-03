@@ -150,6 +150,75 @@ def load_dataframe_pickle(path):
     """
 
     return pandas.read_pickle(path)
+    
+ 
+def save_pickle(obj, path):
+    """Pickles an object into a file
+
+    Parameters
+    ----------
+    obj : object
+        The object/data to pickle
+    path : str
+        The path to store the object (if the path does not exist it will be created). 
+        The ending of the file defines the compression type: 
+        - pgz -> pickles the object into a gzip compressed file
+        - pbz2 -> pickles the object into a bzip2 compressed file
+        - otherwise -> binary file using the provided ending
+    """
+        
+    import pickle
+    import gzip
+    import bz2
+    from pathlib import Path
+    
+    parent_path = get_path(path)
+    # create if not exists
+    Path(parent_path).mkdir(parents=True, exist_ok=True)
+    
+    if path.endswith(".pgz"):
+        with gzip.GzipFile(path, "wb") as f:
+            pickle.dump(obj, f)
+    elif path.endswith(".pbz2"):
+        with bz2.BZ2File(path, "wb") as f:
+            pickle.dump(obj, f)
+    else:
+        with open(path, "wb") as f:
+            pickle.dump(obj, f)
+            
+            
+def load_pickle(path):
+    """Loads a pickled object
+
+    Parameters
+    ----------
+    path : str
+        The path to store the object (if the path does not exist it will be created). 
+        The ending of the file defines the compression type: 
+        - pgz -> pickles the object into a gzip compressed file
+        - pbz2 -> pickles the object into a bzip2 compressed file
+        - otherwise -> binary file using the provided ending
+        
+    Returns
+    -------
+    object
+        The loaded object
+    """
+    # see https://stackoverflow.com/a/58740659 in case problems emerge or use package 'dill'
+        
+    import pickle
+    import gzip
+    import bz2
+    
+    if path.endswith(".pgz"):
+        with gzip.GzipFile(path, "rb") as f:
+            return pickle.load(f)
+    elif path.endswith(".pbz2"):
+        with bz2.BZ2File(path, "rb") as f:
+            return pickle.load(f)
+    else:
+        with open(path, "rb") as f:
+            return pickle.load(f) 
 
 
 def download(url, path, re_download=False):

@@ -173,8 +173,6 @@ def plot_ngram_counts(counter, n_most_common, title="Term frequencies"):
     plt.xlim(-0.6, len(x)-0.4) # set tighter x lims
     plt.tight_layout() # change the whitespace such that all labels fit nicely
     plt.show()
-    
-import matplotlib.pyplot as plt 
 
 
 def plot_feature_importance(classifier, feature_names, top_features=20):

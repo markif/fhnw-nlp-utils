@@ -4,7 +4,7 @@ with open("Readme.md", "r") as fh:
     long_description = fh.read()
 
 setup(name='fhnw-nlp-utils',
-      version='0.2.0',
+      version='0.2.6',
       description='Utilities for NLP courses taught at FHNW.',
       long_description=long_description,
       long_description_content_type="text/markdown",

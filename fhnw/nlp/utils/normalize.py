@@ -1,9 +1,3 @@
-import pandas as pd
-import nltk
-from nltk.tokenize import word_tokenize
-
-from fhnw.nlp.utils.processing import is_iterable
-from fhnw.nlp.utils.text import join_tokens
 
 def tokenize(text, stopwords):
     """Tokenizes a text and removes stopwords
@@ -20,8 +14,10 @@ def tokenize(text, stopwords):
     list
         The tokenized text
     """
+    from fhnw.nlp.utils.processing import is_iterable
     
     if isinstance(text, str):
+        from nltk.tokenize import word_tokenize
         word_tokens = word_tokenize(text)
     elif is_iterable(text):
         word_tokens = text
@@ -47,8 +43,10 @@ def tokenize_stem(text, stopwords, stemmer):
     list
         The tokenized and stemmed text
     """
+    from fhnw.nlp.utils.processing import is_iterable
         
     if isinstance(text, str):
+        from nltk.tokenize import word_tokenize
         word_tokens = word_tokenize(text)
     elif is_iterable(text):
         word_tokens = text
@@ -76,10 +74,12 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
     list
         The tokenized and lemmatized text
     """
+    from fhnw.nlp.utils.processing import is_iterable
         
     if isinstance(text, str):
         text = text
     elif is_iterable(text):
+        from fhnw.nlp.utils.text import join_tokens
         text = join_tokens(text, set())
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))  
@@ -145,36 +145,3 @@ def normalize(text, stopwords, stemmer=None, lemmanizer=None, lemma_with_ner=Fal
         return tokenize_stem(text, stopwords, stemmer)
     else:
         return tokenize(text, stopwords)
-    
-def normalize_df(df, stopwords, field_read="text", field_write="token_clean", stemmer=None, lemmanizer=None, lemma_with_ner=False):
-    """Normalized a column of text by calling normalize (primarily meant for parallel processing)
-
-    Parameters
-    ----------
-    df : dataframe
-        The dataframe
-    stopwords : set
-        A set of stopword to remove from the tokens
-    field_read : str
-        The column name to read from (default is text)
-    field_write : str
-        The column name to write to (default is token_clean)
-    stemmer: stemmer
-        The stemmer to use (e.g. SnowballStemmer) or None to disable stemming
-    lemmanizer: spacy nlp pipeline
-        The lemmanizer to use (must be spacy nlp pipeline) or None to disable lemmantization
-    lemma_with_ner: bool
-        Defines if named entities (NERs) should be keept in one token
-        
-    Returns
-    -------
-    dataframe
-        The dataframe with the normalized text
-    """
-    
-    # do not grow the dataframe directly - see https://stackoverflow.com/a/56746204
-    series = df[field_read].map(
-        lambda x: normalize(x, stopwords, stemmer, lemmanizer, lemma_with_ner) if isinstance(x, str) or is_iterable(x) else list()
-    )
-    
-    return series.to_frame(field_write)
