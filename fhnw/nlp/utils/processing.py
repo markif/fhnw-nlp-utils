@@ -104,7 +104,9 @@ def _transform_sub_df_by_field(field_read, func_with_params, df):
     #return series.to_frame(field_write)
     return series
 
-def _transform_sub_df_by_row(raw, func, func_params, df):   
+def _transform_sub_df_by_row(raw, func, func_params, df): 
+    import pandas as pd
+     
     series = df.apply(func, axis=1, raw=raw, args=func_params)
     #return series.to_frame(field_write)
     return series
@@ -125,7 +127,9 @@ def provide_concated_dfs(original_df, computed_series, field_write):
     dataframe
         A concatenated dataframe 
     """
-    return pd.concat([df, computed_series.to_frame(field_write)], axis=1)
+    import pandas as pd
+    
+    return pd.concat([original_df, computed_series.to_frame(field_write)], axis=1)
 
 def provide_computed_df(original_df, computed_series, field_write):
     """Creates a dataframe from the computed series using 'field_write' as column name
