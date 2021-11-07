@@ -34,18 +34,19 @@ class Preprocessor(BaseEstimator, TransformerMixin):
 
 
 def parallelize_dataframe(df, func, **func_params):
-    """Breaks a pandas dataframe in n_jobs parts and spawns n_jobs processes to apply the provided function to all the parts
+    """Breaks a pandas dataframe in n_jobs parts and spawns n_jobs processes to apply the provided function to all the fields/rows of the sub-dataframes
 
     Parameters
     ----------
     df : dataframe
         The dataframe with the data
     func : function
-        The function to apply
+        The function call for each sub-dataframe
     func_params : The function parameters
         All the parameters for the provided function 'func'. 
         Additionally, 'func_params' can contain following control parameters:
         - 'n_jobs' specifies the exact number of processes to spawn (defaults to 'psutil.cpu_count(logical=True)').
+        - 'processing_mode' specifies what func expects as parameter: 'row' one row/field per call, 'df' a complete sub-dataframe per call (default: 'row-mode') 
         - 'field_read' specifies the data column name to read. If this parameter is undefined, the complete row is passed to 'func' (can be usefull if func needs to read several values)
         - 'raw' specifies if a raw numpy array (only row wise processing) will be provided to 'func' (defaults to 'False').
         - 'field_write' specifies the column name to write the result of 'func' (defaults to 'output'). 
@@ -75,28 +76,40 @@ def parallelize_dataframe(df, func, **func_params):
         n_jobs = psutil.cpu_count(logical=True)
     field_write = func_params.pop("field_write", "output") 
     raw = func_params.pop("raw", False)
+    processing_mode = func_params.pop("processing_mode", "row")
     field_read = func_params.get("field_read")
     if field_read is not None:
         # only keep specific field -> less copying
         read_df = df[field_read].to_frame(field_read)
-        # remove param
-        func_params.pop("field_read")
-        # prepare function
-        sub_func_with_params = partial(func, **func_params)
-        func_with_params = partial(_transform_sub_df_by_field, field_read, sub_func_with_params)
+        if processing_mode == "row":
+            # remove param
+            func_params.pop("field_read")
+            # prepare function
+            sub_func_with_params = partial(func, **func_params)
+            func_with_params = partial(_transform_sub_df_by_field, field_read, sub_func_with_params)
+        elif processing_mode == "df":
+            func_with_params = partial(func, **func_params)
+        else:
+            raise TypeError("Unknown processing_mode "+ processing_mode)
     else:
         read_df = df
-        # prepare function
-        func_with_params = partial(_transform_sub_df_by_row, raw, func, func_params)
+        if processing_mode == "row":
+            # prepare function
+            func_with_params = partial(_transform_sub_df_by_row, raw, func, func_params)
+        elif processing_mode == "df":
+            func_with_params = partial(func, **func_params)
+        else:
+            raise TypeError("Unknown processing_mode "+ processing_mode)
     
     df_split = np.array_split(read_df, n_jobs)
 
     pool = Pool(n_jobs)
-    write_df = pd.concat(pool.map(func_with_params, df_split))
+    computation_result = pd.concat(pool.map(func_with_params, df_split))
     pool.close()
     pool.join()
 
-    return finalizer_func(df, write_df, field_write)
+    return finalizer_func(df, computation_result, field_write)
+    
 
 def _transform_sub_df_by_field(field_read, func_with_params, df):
     #series = df[self.field_read].apply(self.func, args=self.func_params)
@@ -111,15 +124,15 @@ def _transform_sub_df_by_row(raw, func, func_params, df):
     #return series.to_frame(field_write)
     return series
 
-def provide_concated_dfs(original_df, computed_series, field_write):
+def provide_concated_dfs(original_df, computation_result, field_write):
     """Concatenates the original dataframe with the computed series using 'field_write' as column name
 
     Parameters
     ----------
     original_df : dataframe
         The original dataframe
-    computed_series : series
-        The computed series
+    computation_result : series or dataframe
+        The computation result
     field_write : The provided name of the computed series/column name
     
     Returns
@@ -129,17 +142,24 @@ def provide_concated_dfs(original_df, computed_series, field_write):
     """
     import pandas as pd
     
-    return pd.concat([original_df, computed_series.to_frame(field_write)], axis=1)
+    if isinstance(computation_result, pd.DataFrame):
+        return pd.concat([original_df, computation_result], axis=1)
+    elif isinstance(computation_result, pd.Series):
+        return pd.concat([original_df, computation_result.to_frame(field_write)], axis=1)
+    else:
+        raise TypeError("Unsupported result type. Only pd.DataFrame and pd.Series are supported")
+    
 
-def provide_computed_df(original_df, computed_series, field_write):
+
+def provide_computed_df(original_df, computation_result, field_write):
     """Creates a dataframe from the computed series using 'field_write' as column name
 
     Parameters
     ----------
     original_df : dataframe
         The original dataframe
-    computed_series : series
-        The computed series
+    computation_result : series or dataframe
+        The computation result
     field_write : The provided name of the computed series/column name
     
     Returns
@@ -147,17 +167,24 @@ def provide_computed_df(original_df, computed_series, field_write):
     dataframe
         A dataframe consisting of one column with the computation results
     """
-    return computed_series.to_frame(field_write)
+    import pandas as pd
+    
+    if isinstance(computation_result, pd.DataFrame):
+        return computation_result
+    elif isinstance(computation_result, pd.Series):
+        return computation_result.to_frame(field_write)
+    else:
+        raise TypeError("Unsupported result type. Only pd.DataFrame and pd.Series are supported")
 
-def provide_computed_series_as_list(original_df, computed_series, field_write):
+def provide_computed_series_as_list(original_df, computation_result, field_write):
     """Creates a list from the computed series
 
     Parameters
     ----------
     original_df : dataframe
         The original dataframe
-    computed_series : series
-        The computed series
+    computation_result : series or dataframe
+        The computation result
     field_write : The provided name of the computed series/column name
     
     Returns
@@ -165,7 +192,14 @@ def provide_computed_series_as_list(original_df, computed_series, field_write):
     list
         A list with the computation results
     """
-    return computed_series.to_list()
+    import pandas as pd
+    
+    if isinstance(computation_result, pd.DataFrame):
+        return computation_result
+    elif isinstance(computation_result, pd.Series):
+        return computed_series.to_list()
+    else:
+        raise TypeError("Unsupported result type. Only pd.DataFrame and pd.Series are supported")
         
 
 def is_iterable(obj):
