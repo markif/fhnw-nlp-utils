@@ -1,6 +1,6 @@
 
 def tokenize(text, stopwords):
-    """Tokenizes a text and removes stopwords
+    """Tokenizes and lowercases a text and removes stopwords
 
     Parameters
     ----------
@@ -27,7 +27,7 @@ def tokenize(text, stopwords):
     return [word.lower() for word in word_tokens if word.lower() not in stopwords]
 
 def tokenize_stem(text, stopwords, stemmer):
-    """Tokenizes and stems a text and removes stopwords
+    """Tokenizes, lowercases and stems a text and removes stopwords
 
     Parameters
     ----------
@@ -56,7 +56,7 @@ def tokenize_stem(text, stopwords, stemmer):
     return [stemmer.stem(word.lower()) for word in word_tokens if word.lower() not in stopwords]
 
 def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
-    """Tokenizes and lemmatizes a text and removes stopwords
+    """Tokenizes, lowercases and lemmatizes a text and removes stopwords
 
     Parameters
     ----------
@@ -118,7 +118,7 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
 
 
 def normalize(text, stopwords, stemmer=None, lemmanizer=None, lemma_with_ner=False):
-    """Normalizes (e.g. tokenize and stem) a text and removes stopwords
+    """Normalizes (e.g. tokenize and stem) and lowercases a text and removes stopwords
 
     Parameters
     ----------
