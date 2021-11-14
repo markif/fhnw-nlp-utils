@@ -189,12 +189,13 @@ def plot_feature_importance(classifier, feature_names, top_features=20):
     """
     
     import matplotlib.pyplot as plt 
+    import numpy as np
         
     coefs = classifier.coef_
     n_coefs = len(coefs)
     
     for i in range(n_coefs):
-        label = classifier.classes_[i] + ("" if n_coefs >= len(classifier.classes_) else "/"+classifier.classes_[i + 1])
+        label = classifier.classes_[i] +  ("/"+classifier.classes_[1] if n_coefs == 1 else " vs-rest")
         coef = coefs[i,]
     
         top_positive_coefficients = np.argsort(coef)[-top_features:]
