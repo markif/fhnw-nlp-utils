@@ -73,7 +73,7 @@ def parallelize_dataframe(df, func, **func_params):
     n_jobs = func_params.pop("n_jobs", -1)
     if n_jobs <= 0:
         import psutil
-        n_jobs = psutil.cpu_count(logical=True)
+        n_jobs = psutil.cpu_count(logical=False)
     field_write = func_params.pop("field_write", "output") 
     raw = func_params.pop("raw", False)
     processing_mode = func_params.pop("processing_mode", "row")
@@ -101,12 +101,14 @@ def parallelize_dataframe(df, func, **func_params):
         else:
             raise TypeError("Unknown processing_mode "+ processing_mode)
     
-    df_split = np.array_split(read_df, n_jobs)
-
-    pool = Pool(n_jobs)
-    computation_result = pd.concat(pool.map(func_with_params, df_split))
-    pool.close()
-    pool.join()
+    if n_jobs > 1:
+        df_split = np.array_split(read_df, n_jobs)
+        pool = Pool(n_jobs)
+        computation_result = pd.concat(pool.map(func_with_params, df_split))
+        pool.close()
+        pool.join()
+    else:
+        computation_result = func_with_params(read_df)
 
     return finalizer_func(df, computation_result, field_write)
     
@@ -197,7 +199,7 @@ def provide_computed_series_as_list(original_df, computation_result, field_write
     if isinstance(computation_result, pd.DataFrame):
         return computation_result
     elif isinstance(computation_result, pd.Series):
-        return computed_series.to_list()
+        return computation_result.to_list()
     else:
         raise TypeError("Unsupported result type. Only pd.DataFrame and pd.Series are supported")
         
