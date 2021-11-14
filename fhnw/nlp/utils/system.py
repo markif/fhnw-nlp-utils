@@ -60,3 +60,57 @@ def get_compute_device():
     import tensorflow as tf
     
     return "cuda:0" if tf.config.list_physical_devices("GPU") else "cpu"
+
+
+def system_info(): 
+    """Provides some system information like OS etc.
+    
+    Returns
+    -------
+    str
+        The system information
+    """
+      
+    import os
+    s = "OS name: "+ str(os.name)
+    
+    import platform
+    s = s + os.linesep + "Platform name: " + str(platform.system())
+    s = s + os.linesep + "Platform release: " + str(platform.release())
+    s = s + os.linesep + "Python version: "+ str(platform.python_version())
+    
+    try:
+        import cpuinfo
+        cpu_info = cpuinfo.get_cpu_info()
+        s = s + os.linesep + "CPU brand: "+ str(cpu_info["brand_raw"])
+    except ImportError as e:
+        pass
+        
+    try:
+        import psutil
+        cores = psutil.cpu_count(logical=False)
+        s = s + os.linesep + "CPU cores: "+ str(cores)
+    except ImportError as e:
+        pass
+
+    gpu_available = False
+    try:
+        import tensorflow as tf
+        s = s + os.linesep + "Tensorflow version: " + str(tf.__version__)
+        
+        gpu_available = tf.config.list_physical_devices("GPU")
+        s = s + os.linesep + "GPU is " + ("available" if gpu_available else "NOT AVAILABLE")
+    except ImportError as e:
+        pass
+        
+    try:
+        import igpu
+
+        gpu_count = igpu.count_devices()
+        for i in range(gpu_count):
+           gpu = igpu.get_device(i)
+           s = s + os.linesep + "GPU is a "+ str(gpu.name) +" with "+ str(round(gpu.memory.total)) + str(gpu.memory.unit)
+    except ImportError as e:
+        pass
+    
+    return s
