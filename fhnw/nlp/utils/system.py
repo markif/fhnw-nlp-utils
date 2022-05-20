@@ -90,6 +90,8 @@ def system_info():
         import psutil
         cores = psutil.cpu_count(logical=False)
         s = s + os.linesep + "CPU cores: "+ str(cores)
+        memory = psutil.virtual_memory()
+        s = s + os.linesep +"RAM: " + str(round(memory.total/(1024.**3), 2)) + "GB total and " + str(round(memory.available/(1024.**3), 2)) + "GB available"
     except ImportError as e:
         pass
 
