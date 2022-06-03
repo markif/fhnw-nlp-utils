@@ -85,6 +85,9 @@ def system_info():
         s = s + os.linesep + "CPU brand: "+ str(cpu_info["brand_raw"])
     except ImportError as e:
         pass
+    except Exception as e:
+    	print("Error in 'cpuinfo':", e)
+    	pass
         
     try:
         import psutil
@@ -94,6 +97,9 @@ def system_info():
         s = s + os.linesep +"RAM: " + str(round(memory.total/(1024.**3), 2)) + "GB total and " + str(round(memory.available/(1024.**3), 2)) + "GB available"
     except ImportError as e:
         pass
+    except Exception as e:
+    	print("Error in 'psutil':", e)
+    	pass
 
     gpu_available = False
     try:
@@ -104,6 +110,9 @@ def system_info():
         s = s + os.linesep + "GPU is " + ("available" if gpu_available else "NOT AVAILABLE")
     except ImportError as e:
         pass
+    except Exception as e:
+    	print("Error in 'tensorflow':", e)
+    	pass
         
     try:
         import igpu
@@ -114,5 +123,8 @@ def system_info():
            s = s + os.linesep + "GPU is a "+ str(gpu.name) +" with "+ str(round(gpu.memory.total)) + str(gpu.memory.unit)
     except ImportError as e:
         pass
+    except Exception as e:
+    	print("Error in 'igpu':", e)
+    	pass
     
     return s
