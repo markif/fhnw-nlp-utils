@@ -1,5 +1,5 @@
 
-def tokenize(text, stopwords):
+def tokenize(text, stopwords, word_splitter):
     """Tokenizes and lowercases a text and removes stopwords
 
     Parameters
@@ -8,6 +8,8 @@ def tokenize(text, stopwords):
         The text either as string or iterable of tokens (in this case tokenization is not applied)
     stopwords : set
         A set of stopword to remove from the tokens
+    word_splitter: splitter
+        The word splitter to use (callable e.g. compound_split to split compound words) or None to disable word splitting
         
     Returns
     -------
@@ -23,10 +25,14 @@ def tokenize(text, stopwords):
         word_tokens = text
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))
+        
+    if word_splitter is not None:
+        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
 
     return [word.lower() for word in word_tokens if word.lower() not in stopwords]
 
-def tokenize_stem(text, stopwords, stemmer):
+
+def tokenize_stem(text, stopwords, word_splitter, stemmer):
     """Tokenizes, lowercases and stems a text and removes stopwords
 
     Parameters
@@ -35,8 +41,10 @@ def tokenize_stem(text, stopwords, stemmer):
         The text either as string or iterable of tokens (in this case tokenization is not applied)
     stopwords : set
         A set of stopword to remove from the tokens
-    stemmer: stemmer
-        The stemmer to use (e.g. SnowballStemmer)
+    stemmer: callable
+        The stemmer to use (callable e.g. SnowballStemmer)
+    word_splitter: splitter
+        The word splitter to use (callable e.g. compound_split to split compound words) or None to disable word splitting
         
     Returns
     -------
@@ -53,7 +61,11 @@ def tokenize_stem(text, stopwords, stemmer):
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))
 
-    return [stemmer.stem(word.lower()) for word in word_tokens if word.lower() not in stopwords]
+    if word_splitter is not None:
+        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
+        
+    return [stemmer(word.lower()) for word in word_tokens if word.lower() not in stopwords]
+
 
 def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
     """Tokenizes, lowercases and lemmatizes a text and removes stopwords
@@ -64,6 +76,8 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
         The text either as string or iterable of tokens (in this case tokenization is not applied)
     stopwords : set
         A set of stopword to remove from the tokens
+    word_splitter: splitter
+        The word splitter to use (callable e.g. compound_split to split compound words) or None to disable word splitting
     lemmanizer: spacy nlp pipeline
         The lemmanizer to use (must be spacy nlp pipeline)
     keep_ner: bool
@@ -83,6 +97,9 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
         text = join_tokens(text, set())
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))  
+    
+    if word_splitter is not None:
+        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
     
     if keep_ners:
         # HanoverTagger could be an alternative but takes longer 
@@ -117,7 +134,7 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
         return [tok.lemma_.lower() for tok in doc if tok.is_alpha and not tok.is_punct and tok.text.lower() not in stopwords and tok.lemma_.lower() not in stopwords]
 
 
-def normalize(text, stopwords, stemmer=None, lemmanizer=None, lemma_with_ner=False):
+def normalize(text, stopwords, word_splitter=None, stemmer=None, lemmanizer=None, lemma_with_ner=False):
     """Normalizes (e.g. tokenize and stem) and lowercases a text and removes stopwords
 
     Parameters
@@ -126,8 +143,10 @@ def normalize(text, stopwords, stemmer=None, lemmanizer=None, lemma_with_ner=Fal
         The text either as string or iterable of tokens (in this case tokenization is not applied)
     stopwords : set
         A set of stopword to remove from the tokens
-    stemmer: stemmer
-        The stemmer to use (e.g. SnowballStemmer) or None to disable stemming
+    word_splitter: callable
+        The word splitter to use (callable e.g. compound_split to split compound words) or None to disable word splitting
+    stemmer: callable
+        The stemmer to use (callable e.g. SnowballStemmer) or None to disable stemming
     lemmanizer: spacy nlp pipeline
         The lemmanizer to use (must be spacy nlp pipeline) or None to disable lemmantization
     lemma_with_ner: bool
@@ -140,8 +159,8 @@ def normalize(text, stopwords, stemmer=None, lemmanizer=None, lemma_with_ner=Fal
     """
         
     if lemmanizer is not None:
-        return tokenize_lemma(text, stopwords, lemmanizer, keep_ners=lemma_with_ner)
+        return tokenize_lemma(text, stopwords, word_splitter, lemmanizer, keep_ners=lemma_with_ner)
     elif stemmer is not None:
-        return tokenize_stem(text, stopwords, stemmer)
+        return tokenize_stem(text, stopwords, word_splitter, stemmer)
     else:
-        return tokenize(text, stopwords)
+        return tokenize(text, stopwords, word_splitter)

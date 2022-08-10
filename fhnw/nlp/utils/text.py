@@ -21,7 +21,7 @@ def join_tokens(tokens, stopwords = set()):
         return " ".join(token for token in tokens if token not in stopwords)
         
 
-def clean_text(text, keep_punctuation=False):
+def clean_text(text, keep_punctuation=False, ensure_whitespace_after_punctuation=True):
     """Cleans text by removing html tags, non ascii chars, digits and optionally punctuation
 
     Parameters
@@ -30,6 +30,8 @@ def clean_text(text, keep_punctuation=False):
         The text to clean
     keep_punctuation : bool
         Defines if punctuation should be kept
+    ensure_whitespace_after_punctuation : bool
+        Defines if a whitespace should be added after punctuation (.,;:!?) if one is missing
         
     Returns
     -------
@@ -42,6 +44,10 @@ def clean_text(text, keep_punctuation=False):
     
     # remove any html tags (< /br> often found)
     text = re.sub(RE_TAGS, " ", text)
+    
+    if ensure_whitespace_after_punctuation:
+        RE_SPACE_AFTER_PUNKT = re.compile(r"(?<=[.,;:!?])(?=[A-Za-z])")
+        text = re.sub(RE_SPACE_AFTER_PUNKT, " ", text)
     
     if keep_punctuation:
         RE_ASCII_PUNCTUATION = re.compile(r"[^A-Za-zÀ-ž,.!? ]", re.IGNORECASE)
