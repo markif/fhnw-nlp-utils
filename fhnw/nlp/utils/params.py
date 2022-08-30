@@ -182,10 +182,10 @@ def dataframe_to_dataset(params, data, X = None):
         data[X_column_name] = next(iter(X.values()))   
     
     ds = tf.data.Dataset.from_tensor_slices((dict(data), y))
+    #ds = ds.cache()
     if shuffle:
         ds = ds.shuffle(buffer_size=len(data))
     
-    # ds = ds.cache()
     ds = ds.batch(batch_size)
     ds = ds.prefetch(tf.data.AUTOTUNE)
     return ds
@@ -236,10 +236,12 @@ def extract_text_vectorization_and_set(params):
         The dictionary containing the parameters
     """
     
-    from tensorflow.keras.layers.experimental.preprocessing import TextVectorization
-    # for newer versions use
-    #from tensorflow.keras.layers import TextVectorization
     # see https://towardsdatascience.com/you-should-try-the-new-tensorflows-textvectorization-layer-a80b3c6b00ee
+    try:
+        # for newer tf versions use
+        from tensorflow.keras.layers import TextVectorization
+    except ImportError:
+        from tensorflow.keras.layers.experimental.preprocessing import TextVectorization
 
     verbose = params.get("verbose", False)
     output_sequence_length = params.get("output_sequence_length", None)
@@ -526,8 +528,8 @@ def extract_embedding_layer_and_set(params):
                                           embedding_matrix.shape[1], 
                                           weights=[embedding_matrix],
                                           input_length=params["embedding_input_sequence_length"],
-                                          trainable=params["embedding_trainable"],
-                                          mask_zero = params["embedding_mask_zero"],
+                                          trainable=params.get("embedding_trainable", False),
+                                          mask_zero = params.get("embedding_mask_zero", True),
                                           name="embedding"
                                          )
     else:
@@ -576,6 +578,7 @@ def build_model_cnn(params):
     
     classification_type = params.get("classification_type", "binary")
     
+    X_column_name = params.get("X_column_name", "text_clean")
     computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
     vectorize_layer = params[computed_objects_column_name]["vectorize_layer"]
     embedding_layer = params[computed_objects_column_name]["embedding_layer"]
@@ -585,7 +588,7 @@ def build_model_cnn(params):
     
     model = keras.Sequential(name="cnn")
     # A text input
-    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name="text_input"))
+    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
     # The first layer in our model is the vectorization layer. After this layer,
     # we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
     model.add(vectorize_layer)
@@ -658,6 +661,7 @@ def build_model_rnn(params):
 
     classification_type = params.get("classification_type", "binary") 
     
+    X_column_name = params.get("X_column_name", "text_clean")
     computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
     vectorize_layer = params[computed_objects_column_name]["vectorize_layer"]
     embedding_layer = params[computed_objects_column_name]["embedding_layer"]
@@ -667,7 +671,7 @@ def build_model_rnn(params):
     
     model = keras.Sequential(name="rnn")
     # A text input
-    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name="text_input"))
+    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
     # The first layer in our model is the vectorization layer. After this layer,
     # we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
     model.add(vectorize_layer)

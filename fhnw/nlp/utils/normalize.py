@@ -1,4 +1,3 @@
-
 def tokenize(text, stopwords, word_splitter):
     """Tokenizes and lowercases a text and removes stopwords
 
@@ -19,17 +18,21 @@ def tokenize(text, stopwords, word_splitter):
     from fhnw.nlp.utils.processing import is_iterable
     
     if isinstance(text, str):
-        from nltk.tokenize import word_tokenize
-        word_tokens = word_tokenize(text)
+        from fhnw.nlp.utils.defaults import default_tokenizer
+        word_tokens = default_tokenizer()(text)
     elif is_iterable(text):
         word_tokens = text
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))
         
     if word_splitter is not None:
-        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
-
-    return [word.lower() for word in word_tokens if word.lower() not in stopwords]
+        # with python 3.8
+        #return [lower for word in word_tokens if word.lower() not in stopwords for split in word_splitter(word) if (lower := split.lower()) not in stopwords]
+        return [split.lower() for word in word_tokens if word.lower() not in stopwords for split in word_splitter(word) if split.lower() not in stopwords]
+    else:
+        # with python 3.8
+        #return [lower for word in word_tokens if (lower := word.lower()) not in stopwords]
+        return [word.lower() for word in word_tokens if word.lower() not in stopwords]
 
 
 def tokenize_stem(text, stopwords, word_splitter, stemmer):
@@ -54,17 +57,21 @@ def tokenize_stem(text, stopwords, word_splitter, stemmer):
     from fhnw.nlp.utils.processing import is_iterable
         
     if isinstance(text, str):
-        from nltk.tokenize import word_tokenize
-        word_tokens = word_tokenize(text)
+        from fhnw.nlp.utils.defaults import default_tokenizer
+        word_tokens = default_tokenizer()(text)
     elif is_iterable(text):
         word_tokens = text
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))
 
     if word_splitter is not None:
-        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
-        
-    return [stemmer(word.lower()) for word in word_tokens if word.lower() not in stopwords]
+        # with python 3.8
+        #return [stemmer(lower) for word in word_tokens if word.lower() not in stopwords for split in word_splitter(word) if (lower := split.lower()) not in stopwords]
+        return [stemmer(split.lower()) for word in word_tokens if word.lower() not in stopwords for split in word_splitter(word) if split.lower() not in stopwords]
+    else:
+        # with python 3.8
+        #return [stemmer(lower) for word in word_tokens if (lower := word.lower()) not in stopwords]
+        return [stemmer(word.lower()) for word in word_tokens if word.lower() not in stopwords]
 
 
 def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
@@ -76,8 +83,6 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
         The text either as string or iterable of tokens (in this case tokenization is not applied)
     stopwords : set
         A set of stopword to remove from the tokens
-    word_splitter: splitter
-        The word splitter to use (callable e.g. compound_split to split compound words) or None to disable word splitting
     lemmanizer: spacy nlp pipeline
         The lemmanizer to use (must be spacy nlp pipeline)
     keep_ner: bool
@@ -97,9 +102,6 @@ def tokenize_lemma(text, stopwords, lemmanizer, keep_ners=False):
         text = join_tokens(text, set())
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))  
-    
-    if word_splitter is not None:
-        word_tokens = [split for word in word_tokens for split in word_splitter(word)]
     
     if keep_ners:
         # HanoverTagger could be an alternative but takes longer 
@@ -159,7 +161,7 @@ def normalize(text, stopwords, word_splitter=None, stemmer=None, lemmanizer=None
     """
         
     if lemmanizer is not None:
-        return tokenize_lemma(text, stopwords, word_splitter, lemmanizer, keep_ners=lemma_with_ner)
+        return tokenize_lemma(text, stopwords, lemmanizer, keep_ners=lemma_with_ner)
     elif stemmer is not None:
         return tokenize_stem(text, stopwords, word_splitter, stemmer)
     else:

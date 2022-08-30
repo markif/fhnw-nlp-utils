@@ -4,7 +4,7 @@ with open("Readme.md", "r") as fh:
     long_description = fh.read()
 
 setup(name='fhnw-nlp-utils',
-      version='0.4.0',
+      version='0.4.8',
       description='Utilities for NLP courses taught at FHNW.',
       long_description=long_description,
       long_description_content_type="text/markdown",
@@ -23,5 +23,7 @@ setup(name='fhnw-nlp-utils',
           'nltk',
           'matplotlib',
           'wordcloud',
+          'compound-split',
+          'pyarrow',
       ],
       zip_safe=False)
