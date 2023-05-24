@@ -54,6 +54,7 @@ def tokenize_stem(text, stopwords, word_splitter, stemmer):
     list
         The tokenized and stemmed text
     """
+    from typing import Callable
     from fhnw.nlp.utils.processing import is_iterable
         
     if isinstance(text, str):
@@ -63,6 +64,9 @@ def tokenize_stem(text, stopwords, word_splitter, stemmer):
         word_tokens = text
     else:
         raise TypeError("Only string or iterable (e.g. list) is supported. Received a "+ str(type(text)))
+
+    if not isinstance(stemmer, Callable):
+        stemmer = stemmer.stem 
 
     if word_splitter is not None:
         # with python 3.8

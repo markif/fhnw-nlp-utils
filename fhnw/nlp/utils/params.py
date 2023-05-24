@@ -145,7 +145,7 @@ def compute_binarized_labels(params, data):
     return y
     
     
-def dataframe_to_dataset(params, data, X = None):
+def dataframe_to_dataset(params, data, training = True):
     """Converts a dataframe into a dataset
 
     Parameters
@@ -154,6 +154,8 @@ def dataframe_to_dataset(params, data, X = None):
         The dictionary containing the parameters
     data: dataframe
         The data
+    training: bool
+        Indicates if it is for training or inference
         
     Returns
     -------
@@ -163,32 +165,67 @@ def dataframe_to_dataset(params, data, X = None):
     
     import tensorflow as tf
     
-    shuffle = params.get("shuffle", True)
-    batch_size = params.get("batch_size", 64)
     X_column_name = params.get("X_column_name", "text_clean")
-    y_column_name = params.get("y_column_name", "label")
-    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
-    label_binarizer = params.setdefault(computed_objects_column_name, {})["label_binarizer"]
     
-    data = data.drop(data.columns.difference([X_column_name, y_column_name]), 1, inplace=False)
-    y = data.pop(y_column_name)
-    y = label_binarizer.transform(y)
-    output_classes = len(label_binarizer.classes_)
-    if output_classes <= 2:
-        y = y.flatten()
+    if training:
+        y_column_name = params.get("y_column_name", "label")
+        computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
+        label_binarizer = params.setdefault(computed_objects_column_name, {})["label_binarizer"]
         
-    if X is not None:
-        data = {}
-        data[X_column_name] = next(iter(X.values()))   
-    
-    ds = tf.data.Dataset.from_tensor_slices((dict(data), y))
-    #ds = ds.cache()
-    if shuffle:
-        ds = ds.shuffle(buffer_size=len(data))
-    
-    ds = ds.batch(batch_size)
-    ds = ds.prefetch(tf.data.AUTOTUNE)
+        y = data[y_column_name]
+        y = label_binarizer.transform(y)
+        output_classes = len(label_binarizer.classes_)
+        if output_classes <= 2:
+            y = y.flatten()
+            
+        ds = tf.data.Dataset.from_tensor_slices((data[X_column_name].values, y))
+    else:
+        ds = tf.data.Dataset.from_tensor_slices((data[X_column_name].values))
+        
     return ds
+
+
+def build_preprocessed_dataset(params, dataset, training = False, preprocessor_time_intensive = None, preprocessor_memory_intensive = None):
+    """Builds a preprocessed data pipeline optimized for GPUs 
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    dataset: tf.data.Dataset
+        The Dataset
+    training: bool
+        Indicates if it is for training or inference
+    preprocessor_time_intensive: function
+        Time intensive preprocessing transformations
+    preprocessor_memory_intensive: function
+        Memory intensive preprocessing transformations
+    """
+    
+    import tensorflow as tf
+    
+    batch_size = params.get("batch_size", 64)
+    n_samples = params.get("n_samples")
+
+    dataset_preprocessed = dataset
+    # vectorize later transformations through batching
+    dataset_preprocessed = dataset_preprocessed.batch(batch_size, num_parallel_calls=tf.data.AUTOTUNE)
+    # parallelize (time intensive) transformations
+    if preprocessor_time_intensive is not None:
+        dataset_preprocessed = dataset_preprocessed.map(preprocessor_time_intensive, num_parallel_calls=tf.data.AUTOTUNE)
+    # cache preprocessed data
+    dataset_preprocessed = dataset_preprocessed.cache()
+    # shuffle data (e.g. to improve training)
+    if training:
+        dataset_preprocessed = dataset_preprocessed.shuffle(buffer_size=n_samples)
+    # parallelize (memory intensive) transformations 
+    if preprocessor_memory_intensive is not None:
+        dataset_preprocessed = dataset_preprocessed.map(preprocessor_memory_intensive, num_parallel_calls=tf.data.AUTOTUNE)
+    # prefetch data to overlap producer (e.g. preprocessing text data on CPU) and consumer (training tensor data on GPU)
+    dataset_preprocessed = dataset_preprocessed.prefetch(tf.data.AUTOTUNE)
+    
+    return dataset_preprocessed
+
     
 def extract_vocabulary_and_set(params, data):
     """Extracts the vocabulary and puts it into the params dictionary
@@ -542,6 +579,57 @@ def extract_embedding_layer_and_set(params):
     params.setdefault(computed_objects_column_name, {})["embedding_layer"] = embedding_layer
     
 
+def compile_model(params, model):
+    """Compiles the model based on the provided params 
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    model: model
+        The keras model
+    """
+    
+    from tensorflow import keras
+        
+    optimizer_learning_rate = params.get("learning_rate", 0.01)
+    optimizer_learning_rate_decay = params.get("optimizer_learning_rate_decay", None)
+    model_metric = get_model_metric(params)
+    model_loss_function = get_loss_function(params)
+
+    # use legacy because otherwise re-compile/re-training does not work
+    adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate)
+    if optimizer_learning_rate_decay is not None:
+        adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
+
+    #model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric, jit_compile=True)
+    model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric)
+
+
+def create_text_preprocessor(params, training = False):
+    """Creates a text preprocessor based on the provided params 
+
+    Parameters
+    ----------
+    params: dict
+        The dictionary containing the parameters
+    training: bool
+        Indicates if it is for training or inference
+    """
+    
+    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
+    vectorize_layer = params[computed_objects_column_name]["vectorize_layer"]
+    
+    if training:
+        # preprocessing function for text and label data (e.g. vectorize training data (text and label))
+        text_preprocessor = lambda text, label: (vectorize_layer(text), label)
+    else:
+        # preprocessing function for text data (e.g. vectorize inference data (text only))
+        text_preprocessor = lambda text: vectorize_layer(text)
+
+    return text_preprocessor
+
+
 def build_model_cnn(params):
     """Builds a cnn classifier based on the provided params 
 
@@ -586,26 +674,26 @@ def build_model_cnn(params):
     output_classes = len(label_binarizer.classes_)
     output_classes = output_classes if output_classes > 2 else 1
     
-    model = keras.Sequential(name="cnn")
-    # A text input
-    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
-    # The first layer in our model is the vectorization layer. After this layer,
-    # we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
-    model.add(vectorize_layer)
+    # Build a separate model for training
+    model_train = keras.Sequential(name="cnn_train")
+    # The input for the training model is already processes, i.e. vectorized.
+    # Offloading this step and prefetching the data provides speedup during training 
+    # After vectorization we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
+    model_train.add(keras.Input(shape=(None,), dtype=tf.int64, name="preprocessed_input"))
     # Next, we add a layer to map those vocab indices into a space of dimensionality 'embedding_dim'. 
-    model.add(embedding_layer)
+    model_train.add(embedding_layer)
     
     for layer in range(cnn_num_conv_pooling_layers):
-        model.add(keras.layers.Conv1D(cnn_conv_num_filters, cnn_conv_kernel_size, activation=cnn_conv_activation_function, strides=cnn_conv_strides, padding=cnn_conv_padding, name="conv_"+str(layer)))
+        model_train.add(keras.layers.Conv1D(cnn_conv_num_filters, cnn_conv_kernel_size, activation=cnn_conv_activation_function, strides=cnn_conv_strides, padding=cnn_conv_padding, name="conv_"+str(layer)))
         
         if layer + 1 < cnn_num_conv_pooling_layers:
-            model.add(keras.layers.MaxPooling1D(pool_size=cnn_max_pool_size, strides=cnn_max_pool_strides, padding=cnn_max_pool_padding, name="max_pool_"+str(layer)))
+            model_train.add(keras.layers.MaxPooling1D(pool_size=cnn_max_pool_size, strides=cnn_max_pool_strides, padding=cnn_max_pool_padding, name="max_pool_"+str(layer)))
         else:
-            model.add(keras.layers.GlobalMaxPooling1D(name="global_max_pool_"+str(layer)))
+            model_train.add(keras.layers.GlobalMaxPooling1D(name="global_max_pool_"+str(layer)))
     
     
     if cnn_global_max_pool_dropout is not None and cnn_global_max_pool_dropout > 0 and cnn_num_conv_pooling_layers > 0:
-        model.add(keras.layers.Dropout(cnn_global_max_pool_dropout, name="global_max_pool_dropout"))
+        model_train.add(keras.layers.Dropout(cnn_global_max_pool_dropout, name="global_max_pool_dropout"))
     
 
     kernel_regularizer = None
@@ -615,11 +703,11 @@ def build_model_cnn(params):
         kernel_regularizer = regularizers.l1(cnn_dense_kernel_regularizer_l1)
     elif cnn_dense_kernel_regularizer_l2 is not None and cnn_dense_kernel_regularizer_l2 > 0:
         kernel_regularizer = regularizers.l2(cnn_dense_kernel_regularizer_l2)
-    model.add(keras.layers.Dense(cnn_dense_units, activation=cnn_dense_activation_function, kernel_regularizer=kernel_regularizer, name="dense"))
+    model_train.add(keras.layers.Dense(cnn_dense_units, activation=cnn_dense_activation_function, kernel_regularizer=kernel_regularizer, name="dense"))
     
     
     if cnn_output_dropout is not None and cnn_output_dropout > 0:
-        model.add(keras.layers.Dropout(cnn_output_dropout, name="dense_dropout"))
+        model_train.add(keras.layers.Dropout(cnn_output_dropout, name="dense_dropout"))
 
     
     if classification_type == "binary":
@@ -631,9 +719,21 @@ def build_model_cnn(params):
     else:
         raise TypeError("Unknown classification_type "+classification_type)
 
-    model.add(keras.layers.Dense(output_classes, activation=output_activation, name="prediction"))
+    model_train.add(keras.layers.Dense(output_classes, activation=output_activation, name="prediction"))
     
-    return model
+    
+    # Next we build the inference model that also contains the preprocessing (all in one)
+    model_inference = keras.Sequential(name="cnn_inference")
+    # A text input layer
+    model_inference.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
+    # Then we vectorize the text.
+    # After this layer, we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
+    model_inference.add(vectorize_layer)
+    # Next we just re-use the training model 
+    model_inference.add(model_train)
+    
+    
+    return model_train, model_inference
     
     
 def build_model_rnn(params):
@@ -669,14 +769,13 @@ def build_model_rnn(params):
     output_classes = len(label_binarizer.classes_)
     output_classes = output_classes if output_classes > 2 else 1
     
-    model = keras.Sequential(name="rnn")
-    # A text input
-    model.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
-    # The first layer in our model is the vectorization layer. After this layer,
-    # we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
-    model.add(vectorize_layer)
+    model_train = keras.Sequential(name="rnn_train")
+    # The input for the training model is already processes, i.e. vectorized.
+    # Offloading this step and prefetching the data provides speedup during training 
+    # After vectorization we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
+    model_train.add(keras.Input(shape=(None,), dtype=tf.int64, name="preprocessed_input"))
     # Next, we add a layer to map those vocab indices into a space of dimensionality 'embedding_dim'. 
-    model.add(embedding_layer)
+    model_train.add(embedding_layer)
     
     for layer in range(rnn_num_layers):
         return_sequences = layer + 1 < rnn_num_layers or rnn_global_max_pooling
@@ -694,17 +793,17 @@ def build_model_rnn(params):
         if rnn_bidirectional:
             layer = keras.layers.Bidirectional(layer)
          
-        model.add(layer)
+        model_train.add(layer)
         
         rnn_units = int(rnn_units / 2)
     
     if rnn_global_max_pooling:
-        model.add(keras.layers.GlobalMaxPool1D(name="global_max_pool"))
+        model_train.add(keras.layers.GlobalMaxPool1D(name="global_max_pool"))
     
-    model.add(keras.layers.Dense(rnn_units, activation=rnn_activation_function))
+    model_train.add(keras.layers.Dense(rnn_units, activation=rnn_activation_function))
     
     if rnn_output_dropout is not None and rnn_output_dropout > 0:
-        model.add(keras.layers.Dropout(rnn_output_dropout, name="dense_dropout"))
+        model_train.add(keras.layers.Dropout(rnn_output_dropout, name="dense_dropout"))
         
     if classification_type == "binary":
         output_activation = "sigmoid"
@@ -715,9 +814,21 @@ def build_model_rnn(params):
     else:
         raise TypeError("Unknown classification_type "+classification_type)
 
-    model.add(keras.layers.Dense(output_classes, activation=output_activation, name="prediction"))
+    model_train.add(keras.layers.Dense(output_classes, activation=output_activation, name="prediction"))
     
-    return model
+    
+    # Next we build the inference model that also contains the preprocessing (all in one)
+    model_inference = keras.Sequential(name="rnn_inference")
+    # A text input layer
+    model_inference.add(keras.layers.InputLayer(input_shape=(1,), dtype=tf.string, name=X_column_name))
+    # Then we vectorize the text.
+    # After this layer, we have a tensor of shape (batch_size, output_sequence_length) containing vocab indices.
+    model_inference.add(vectorize_layer)
+    # Next we just re-use the training model 
+    model_inference.add(model_train)
+    
+    
+    return model_train, model_inference
 
 
 def get_loss_function(params):
@@ -783,10 +894,12 @@ def compile_model(params, model):
     model_metric = get_model_metric(params)
     model_loss_function = get_loss_function(params)
 
-    adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate)
+    # use legacy because otherwise re-compile/re-training does not work
+    adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate)
     if optimizer_learning_rate_decay is not None:
-    	adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
+        adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
 
+    #model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric, jit_compile=True)
     model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric)
     
     
@@ -843,12 +956,11 @@ def train_model(params, model, dataset_train, dataset_val):
     from tensorflow import keras
 
     training_epochs = params.get("training_epochs", 5)
-    training_logdir = params.get("training_logdir", None)
     
-    if training_logdir is None:
-        training_logdir = os.path.join("logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
-    
-    #tensorboard_callback = keras.callbacks.TensorBoard(training_logdir, histogram_freq=1)
+    #training_logdir = params.get("training_logdir", None)
+    #if training_logdir is None:
+    #    training_logdir = os.path.join("logs", datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    #tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir="logs", histogram_freq=0, profile_batch="10, 15")
 
     history = model.fit(
         dataset_train,
@@ -859,7 +971,7 @@ def train_model(params, model, dataset_train, dataset_val):
     return history
     
 
-def predict_classification(params, data, model):
+def predict_classification(params, data, model, preprocessor = None):
     """Predicts the classes 
 
     Parameters
@@ -870,6 +982,8 @@ def predict_classification(params, data, model):
         The data
     model: model
         The keras model
+    preprocessor: function
+        Preprocessing transformations like text vectorization (if None this must be part of the model)
         
     Returns
     -------
@@ -888,7 +1002,17 @@ def predict_classification(params, data, model):
     
     y = data[y_column_name]
     
-    y_pred_prob = model.predict(data[X_column_name], batch_size=batch_size)
+    if preprocessor is None:
+        X = data[X_column_name]
+    else:
+        from fhnw.nlp.utils.params import dataframe_to_dataset
+        from fhnw.nlp.utils.params import build_preprocessed_dataset
+        
+        dataset = dataframe_to_dataset(params, data, False)
+        X = build_preprocessed_dataset(params, dataset, False, preprocessor)
+        #X = preprocessor(data[X_column_name])
+    
+    y_pred_prob = model.predict(X, batch_size=batch_size)
     y_pred = label_binarizer.inverse_transform(y_pred_prob, threshold=prediction_probability_threshold)                                             
     
     params["labels"] = y

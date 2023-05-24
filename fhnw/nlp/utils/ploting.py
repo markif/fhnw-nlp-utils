@@ -240,9 +240,8 @@ def plot_history(history, filename=None):
     else: 
         plt.show()
 
-
-def report_classification_results(params, data, model):
-    """Reports all classification results
+def predict_and_report_classification_results(params, data, model):
+    """Predicts and then reports all classification results
 
     Parameters: 
         params: dict
@@ -253,14 +252,28 @@ def report_classification_results(params, data, model):
             The keras model
     """
     
+    from fhnw.nlp.utils.params import predict_classification
+
+    y, y_pred, y_pred_prob = predict_classification(params, data, model)
+    report_classification_results(params, y, y_pred)
+
+def report_classification_results(params, y, y_pred):
+    """Reports all classification results
+
+    Parameters: 
+        params: dict
+            The dictionary containing the parameters
+        y: list
+            The true labels
+        y_pred: list
+            The predicted labels
+    """
+    
     import os
     from sklearn.metrics import classification_report
-    from fhnw.nlp.utils.params import predict_classification
     
     verbose = params.get("verbose", False)
     path = params.get("model_path")
-
-    y, y_pred, y_pred_prob = predict_classification(params, data, model)
     
     if path is not None:
         path_confusion_matrix = os.path.join(path, "confusion_matrix.png")
@@ -276,3 +289,4 @@ def report_classification_results(params, data, model):
     if verbose:
         report = classification_report(y, y_pred)
         print(report)
+        

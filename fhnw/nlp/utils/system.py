@@ -28,11 +28,10 @@ def gpu_empty_cache():
     """Cleans the GPU cache which seems to fill up after a while
     
     """
-        
+    
     import torch
-    import tensorflow as tf
-
-    if tf.config.list_physical_devices("GPU"):
+    
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
     
 def get_gpu_device_number():
@@ -54,12 +53,12 @@ def get_compute_device():
     Returns
     -------
     str
-        The GPU device with number (cuda:0) of cpu
+        The GPU device with number (cuda:0) or cpu
     """
-        
-    import tensorflow as tf
     
-    return "cuda:0" if tf.config.list_physical_devices("GPU") else "cpu"
+    import torch
+
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def system_info(): 
@@ -128,3 +127,33 @@ def system_info():
     	pass
     
     return s
+    
+    
+def set_log_level(level = 1):
+    """Sets the log level of python/tensorflow
+
+    Parameters
+    ----------
+    level : int
+        The log level (0 -> NOTSET, 1 -> WARNING, 2 -> ERROR, 3 -> CRITICAL
+    version : str
+        A specific version number
+    """
+    
+    import logging
+    import os
+
+    tf_level = logging.WARN
+    if level == 0:
+        tf_level =  logging.NOTSET
+    elif level == 1:
+        tf_level = logging.WARNING
+    elif level == 2:
+        tf_level = logging.ERROR
+    else:
+        tf_level = logging.CRITICAL
+    
+    # see https://stackoverflow.com/a/42121886
+    os.environ["TF_CPP_MIN_LOG_LEVEL"] = str(level)
+    # see https://docs.python.org/3/library/logging.html#logging-levels
+    logging.getLogger("tensorflow").setLevel(tf_level)
