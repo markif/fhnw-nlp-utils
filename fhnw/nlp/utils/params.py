@@ -70,6 +70,8 @@ def get_classification_type_and_set(params, data):
         The data
     """
     
+    from fhnw.nlp.utils.params import get_classification_type
+    
     classification_type =  get_classification_type(params, data)
     params["classification_type"] = classification_type
     return classification_type
@@ -88,6 +90,7 @@ def get_label_binarize(params, data):
     
     from sklearn.preprocessing import LabelBinarizer
     from sklearn.preprocessing import MultiLabelBinarizer
+    from fhnw.nlp.utils.params import get_classification_type
     
     y_column_name = params.get("y_column_name", "label")
     classification_type = get_classification_type(params, data)
@@ -112,6 +115,9 @@ def create_label_binarizer_and_set(params, data):
     data: dataframe
         The data
     """
+    
+    from fhnw.nlp.utils.params import get_classification_type_and_set
+    from fhnw.nlp.utils.params import get_label_binarize
 
     computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
     _ = get_classification_type_and_set(params, data)
