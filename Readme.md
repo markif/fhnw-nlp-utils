@@ -15,7 +15,7 @@ sudo pip install fhnw-nlp-utils
 - Start a Docker container with the build/deploy tools:
 
 ```bash
-docker run -e TZ=Europe/Zurich --name datascience-notebook --net=host -p 8888:8888 -v "$(pwd)":/home/jovyan/work -it --rm i4ds/datascience-notebook start-notebook.sh --NotebookApp.token=''
+docker run -e TZ=Europe/Zurich --name datascience-notebook --net=host -p 8888:8888 -v "$(pwd)":/home/jovyan/work -v ${HOME}/.pypirc:/home/jovyan/.pypirc -it --rm i4ds/datascience-notebook start-notebook.sh --NotebookApp.token=''
 ```
 
 - Build and deploy the library to pypi:

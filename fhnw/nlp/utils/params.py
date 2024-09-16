@@ -16,19 +16,85 @@ def get_train_test_split(params, data):
     """
     
     from sklearn.model_selection import train_test_split
-        
+
+    classification_type = get_classification_type(params, data)
     verbose = params.get("verbose", False)
     split_size = params.get("train_test_split_size", 0.2)
     y_column_name = params.get("y_column_name", "label")
-    
-    data_train, data_test = train_test_split(data, test_size=split_size, shuffle=True, random_state=42, stratify=data[y_column_name])
+
+    if classification_type == "multi-label":
+        data_train, data_test = multilabel_train_test_split(data, test_size=split_size, shuffle=True, random_state=42, stratify=data[y_column_name])
+    else:
+        data_train, data_test = train_test_split(data, test_size=split_size, shuffle=True, random_state=42, stratify=data[y_column_name])
 
     if verbose:
         print(len(data_train), 'train examples')
         print(len(data_test), 'test examples')
         
     return (data_train, data_test)
+
+
+def multilabel_train_test_split(*arrays, test_size=None, train_size=None, random_state=None, shuffle=True, stratify=None):
+    """
+    Train test split for multilabel classification. Uses the algorithm from: 
+    'Sechidis K., Tsoumakas G., Vlahavas I. (2011) On the Stratification of Multi-Label Data'.
+
+    Parameters
+    ----------
+    *arrays:
+        sequence of indexables with same length / shape[0]
+        Allowed inputs are lists, numpy arrays, scipy-sparse matrices or pandas dataframes.
+    test_size:
+        float or int, default=None
+        If float, should be between 0.0 and 1.0 and represent the proportion of the dataset to include in the test split. If int, represents the absolute number of test samples. If None, the value is set to the complement of the train size. If train_size is also None, it will be set to 0.25.
+    train_size:
+        float or int, default=None
+        If float, should be between 0.0 and 1.0 and represent the proportion of the dataset to include in the train split. If int, represents the absolute number of train samples. If None, the value is automatically set to the complement of the test size.
+    random_state:
+        int, RandomState instance or None, default=None
+        Controls the shuffling applied to the data before applying the split. Pass an int for reproducible output across multiple function calls.
+    shuffle:
+        bool, default=True
+        Whether or not to shuffle the data before splitting. If shuffle=False then stratify must be None.
+    stratify:
+        array-like, default=None
+        If not None, data is split in a stratified fashion, using this as the class labels.
+        
+    """
+
+    # see https://github.com/scikit-multilearn/scikit-multilearn/issues/202#issuecomment-1052868514
+
+    from iterstrat.ml_stratifiers import MultilabelStratifiedShuffleSplit
+    from sklearn.utils import indexable, _safe_indexing
+    from sklearn.utils.validation import _num_samples
+    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection._split import _validate_shuffle_split
+    from itertools import chain
+    from sklearn.preprocessing import MultiLabelBinarizer
     
+    if stratify is None:
+        return train_test_split(*arrays, test_size=test_size, train_size=train_size,
+                                random_state=random_state, shuffle=shuffle, stratify=None)
+    
+    assert shuffle, "Stratified train/test split is not implemented for shuffle=False"
+    
+    n_arrays = len(arrays)
+    arrays = indexable(*arrays)
+    n_samples = _num_samples(arrays[0])
+    n_train, n_test = _validate_shuffle_split(
+        n_samples, test_size, train_size, default_test_size=0.25
+    )
+    mlb = MultiLabelBinarizer()
+    stratify = mlb.fit_transform(stratify)
+    cv = MultilabelStratifiedShuffleSplit(test_size=n_test, train_size=n_train, random_state=random_state)
+    train, test = next(cv.split(X=arrays[0], y=stratify))
+
+    return list(
+        chain.from_iterable(
+            (_safe_indexing(a, train), _safe_indexing(a, test)) for a in arrays
+        )
+    ) 
+
     
 def get_classification_type(params, data):
     """Determines the classification type based on what the user defined or inferred by the labels
@@ -40,13 +106,15 @@ def get_classification_type(params, data):
     data: dataframe
         The data
     """
+    import numpy as np
+    from pandas.api.types import is_list_like
     
     verbose = params.get("verbose", False)
     classification_type = params.get("classification_type", None)
     y_column_name = params.get("y_column_name", "label")
     
     if classification_type is None:
-        if len(data[y_column_name].shape) > 1:
+        if is_list_like(data[y_column_name].iloc[0]):
             classification_type = "multi-label"
         elif len(data[y_column_name].unique()) > 2:
             classification_type = "multi-class"
@@ -534,7 +602,7 @@ def calculate_embedding_matrix(params, embedder):
             import random
             
             nr_sample = min(20, len(words_not_found))
-            print("Words without embedding (", nr_sample, "/", nr_words_not_found, "): ", random.sample(words_not_found, nr_sample), sep='')
+            print("Words without embedding (", nr_sample, "/", nr_words_not_found, "): ", random.sample(list(words_not_found), nr_sample), sep='')
         
     return embedding_matrix
 
@@ -603,10 +671,9 @@ def compile_model(params, model):
     model_metric = get_model_metric(params)
     model_loss_function = get_loss_function(params)
 
-    # use legacy because otherwise re-compile/re-training does not work
-    adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate)
+    adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate)
     if optimizer_learning_rate_decay is not None:
-        adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
+        adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
 
     #model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric, jit_compile=True)
     model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric)
@@ -894,16 +961,17 @@ def compile_model(params, model):
     """
     
     from tensorflow import keras
+    from fhnw.nlp.utils.params import get_loss_function
+    from fhnw.nlp.utils.params import get_model_metric
         
     optimizer_learning_rate = params.get("learning_rate", 0.01)
     optimizer_learning_rate_decay = params.get("optimizer_learning_rate_decay", None)
     model_metric = get_model_metric(params)
     model_loss_function = get_loss_function(params)
 
-    # use legacy because otherwise re-compile/re-training does not work
-    adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate)
+    adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate)
     if optimizer_learning_rate_decay is not None:
-        adam = keras.optimizers.legacy.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
+        adam = keras.optimizers.Adam(learning_rate=optimizer_learning_rate, decay=optimizer_learning_rate_decay)
 
     #model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric, jit_compile=True)
     model.compile(loss=model_loss_function, optimizer=adam, metrics=model_metric)
@@ -998,6 +1066,8 @@ def predict_classification(params, data, model, preprocessor = None):
     """
     
     import numpy as np
+    from fhnw.nlp.utils.params import dataframe_to_dataset
+    from fhnw.nlp.utils.params import build_preprocessed_dataset
         
     batch_size = 2 * params.get("batch_size", 64)
     y_column_name = params.get("y_column_name", "label")
@@ -1007,16 +1077,9 @@ def predict_classification(params, data, model, preprocessor = None):
     label_binarizer = params[computed_objects_column_name]["label_binarizer"]
     
     y = data[y_column_name]
-    
-    if preprocessor is None:
-        X = data[X_column_name]
-    else:
-        from fhnw.nlp.utils.params import dataframe_to_dataset
-        from fhnw.nlp.utils.params import build_preprocessed_dataset
         
-        dataset = dataframe_to_dataset(params, data, False)
-        X = build_preprocessed_dataset(params, dataset, False, preprocessor)
-        #X = preprocessor(data[X_column_name])
+    dataset = dataframe_to_dataset(params, data, False)
+    X = build_preprocessed_dataset(params, dataset, False, preprocessor)
     
     y_pred_prob = model.predict(X, batch_size=batch_size)
     y_pred = label_binarizer.inverse_transform(y_pred_prob, threshold=prediction_probability_threshold)                                             

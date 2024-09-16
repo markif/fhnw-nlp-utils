@@ -4,7 +4,7 @@ with open("Readme.md", "r") as fh:
     long_description = fh.read()
 
 setup(name='fhnw-nlp-utils',
-      version='0.8.1',
+      version='0.9.9',
       description='Utilities for NLP courses taught at FHNW.',
       long_description=long_description,
       long_description_content_type="text/markdown",
@@ -25,5 +25,6 @@ setup(name='fhnw-nlp-utils',
           'wordcloud',
           'compound-split',
           'pyarrow',
+          'iterative-stratification',
       ],
       zip_safe=False)

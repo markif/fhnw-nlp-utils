@@ -158,17 +158,19 @@ def dataframe_to_dataset(params, data):
     return dataset
 
 
-def dataframe_to_datasets(params, data, data_test=None):
-    """Converts a dataframe into a Huggingface dataset dictionary with a train, val and test split
+def dataframes_to_dataset(params, data, data_test=None, data_validation=None):
+    """Converts dataframe(s) into a Huggingface dataset dictionary with a train, val and test split
 
     Parameters
     ----------
     params: dict
         The dictionary containing the parameters
     data: dataframe
-        The data
+        The data 
     data_test: dataframe
-        The user defined test split (use None to automatically generate a test split)  
+        The user defined test split (use None to automatically generate a test split)
+    data_validation: dataframe
+        The user defined validation split (use None to automatically generate a validation split)  
         
     Returns
     -------
@@ -177,37 +179,82 @@ def dataframe_to_datasets(params, data, data_test=None):
     """
     
     import pandas as pd
-    from fhnw.nlp.utils.params import compute_binarized_labels
-    from fhnw.nlp.utils.params import create_label_binarizer_and_set
+
+    from fhnw.nlp.utils.params import get_classification_type
     from fhnw.nlp.utils.params import get_train_test_split
     
     from datasets import ClassLabel
     from datasets import Dataset
     from datasets import DatasetDict
+    from datasets import Sequence
     
     X_column_name = params.get("X_column_name", "text")
     y_column_name = params.get("y_column_name", "label")
-    computed_objects_column_name = params.get("computed_objects_column_name", "computed_objects")
-    
+    split_size = params.get("train_test_split_size", 0.2)
+
+    # drop all "extra" columns
     data = data.drop(labels=data.columns.difference([X_column_name, y_column_name]), axis=1)
+    data_all = data
+    if data_test is not None:
+        data_test = data_test.drop(labels=data_test.columns.difference([X_column_name, y_column_name]), axis=1)
+        data_all = pd.concat([data_all, data_test], axis=1)
+    if data_validation is not None:
+        data_validation = data_validation.drop(labels=data_validation.columns.difference([X_column_name, y_column_name]), axis=1)
+        data_all = pd.concat([data_all, data_validation], axis=1)
 
-    # ensure label_binarizer builds on all data (function dataframe_to_dataset will use the existing)
-    label_binarizer = params.setdefault(computed_objects_column_name, {}).get("label_binarizer", None)
-    if label_binarizer is None:
-        create_label_binarizer_and_set(params, data)
-        label_binarizer = params[computed_objects_column_name]["label_binarizer"]
-    
-    # do the split
-    if data_test is None:
+    label_column_name = None
+    class_names = None
+    cast_type = None
+    dataset_all = Dataset.from_pandas(data_all)
+    classification_type = get_classification_type(params, data)
+    if classification_type == "multi-label":
+        label_column_name = "labels"
+        class_names = data_all[y_column_name].explode().unique().tolist()
+        class_names.sort()
+        
+        # https://github.com/huggingface/datasets/issues/6267
+        #In the meantime, this limitation can be circumvented by fetching (unique) labels and calling .cast_column(col, Sequence(ClassLabel(names=labels)))
+        cast_type = Sequence(ClassLabel(num_classes=len(class_names), names=class_names))
+        #dataset_all = dataset_all.cast_column(y_column_name, cast_type)
+        #dataset_all.features[y_column_name] = ClassLabel(num_classes=len(class_names), names=class_names)
+    else:
+        label_column_name = "label"
+        class_names = data_all[y_column_name].unique().tolist()
+        class_names.sort()
+
+        # https://github.com/huggingface/datasets/issues/6267
+        cast_type = ClassLabel(num_classes=len(class_names), names=class_names)
+        #dataset_all = dataset_all.cast_column(y_column_name, cast_type)
+        #dataset_all = dataset_all.class_encode_column(y_column_name)
+
+        
+    if data_test is None and data_validation is None:
+        params_copy = params.copy()
+        params_copy["train_test_split_size"] = 2 * split_size
+        data, data_test = get_train_test_split(params_copy, data)
+
+        params_copy["train_test_split_size"] = 0.5
+        data_test, data_validation = get_train_test_split(params_copy, data_test)
+    elif data_test is None:
         data, data_test = get_train_test_split(params, data)
-    data_train, data_val = get_train_test_split(params, data)
+    elif data_validation is None:
+        data, data_validation = get_train_test_split(params, data)
 
-    dataset_train = dataframe_to_dataset(params, data_train)
-    dataset_test = dataframe_to_dataset(params, data_test)
-    dataset_val = dataframe_to_dataset(params, data_val)
+    dataset_train = Dataset.from_pandas(data)
+    dataset_train = dataset_train.cast_column(y_column_name, cast_type)
+    dataset_test = Dataset.from_pandas(data_test)
+    dataset_test = dataset_test.cast_column(y_column_name, cast_type)
+    dataset_validation = Dataset.from_pandas(data_validation)
+    dataset_validation = dataset_validation.cast_column(y_column_name, cast_type)
     
-    transformers_datasets = DatasetDict({"train":dataset_train, "validation":dataset_val, "test":dataset_test})
+    dataset_dict = DatasetDict({"train":dataset_train, "validation":dataset_validation, "test":dataset_test})
+
+    # some cleanup
+    columns_to_remove = set(sum(dataset_dict.column_names.values(), []))
+    columns_to_remove.remove(X_column_name)
+    columns_to_remove.remove(y_column_name)
+    dataset_dict = dataset_dict.remove_columns(columns_to_remove)
+    dataset_dict = dataset_dict.rename_column(y_column_name, label_column_name)
     
-    params.setdefault(computed_objects_column_name, {})["transformers_datasets"] = transformers_datasets
-    
-    return transformers_datasets
+    return dataset_dict
+

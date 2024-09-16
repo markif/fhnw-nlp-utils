@@ -55,7 +55,8 @@ def plot_grid_search_results(gs, filename=None):
     else: 
         plt.show()
 
-def plot_confusion_matrix(y_true, y_pred, title='', percentage=True, filename=None):
+
+def plot_confusion_matrix(y_true, y_pred, title='', percentage=True, filename=None, label2index=None, classification_type=None, encoding=None):
     """Plots or stores the confusion matrix 
 
     Parameters: 
@@ -69,51 +70,93 @@ def plot_confusion_matrix(y_true, y_pred, title='', percentage=True, filename=No
             Defines if percentage or number of samples should be printed for each category
         filename: str
             The path and name of the file to save the confusion matrix (will not be plotted to the screen if set)
+        label2index: dict
+            The label to index mapping (assume one-hot encoding if label2index is provided)
+        classification_type: str
+            The type of the classification (binary, multi-class, multi-label - can be auto detected if not one-hot encoded)
+        encoding: str
+            The encoding of the data (one-hot, index, label)
     """
     
     import numpy as np
+    import pandas as pd
+    
     import matplotlib.pyplot as plt
-    from sklearn.metrics import confusion_matrix
     
-    classes = list(set(list(y_true) + list(y_pred)))
-    classes.sort()
-
-    cmm = confusion_matrix(y_true, y_pred)
-
-    print('Set Population: {}'.format(cmm.sum()))
-    print('Accuracy: {:.4f}'.format(float(cmm.trace()) / cmm.sum()))
-
-    plt.figure(figsize=(10, 8))
-    plt.imshow(np.flip(cmm / cmm.sum(), 0), interpolation='nearest', cmap='Blues')
-    plt.title(title)
-    plt.ylabel('True label')
-    plt.xlabel('Predicted label')
-    plt.colorbar()
-
-    plt.ylim(-0.5, len(classes)-0.5)
-
-    if classes is not None:
-        tick_marks = np.arange(len(classes))
-        plt.xticks(tick_marks, classes, rotation=45, size='x-large')
-        plt.yticks(np.flip(tick_marks), classes, size='x-large')
-
-    cmm_flip = np.flip(cmm, 0)
-    for y in range(cmm.shape[0]):
-        for x in range(cmm.shape[1]):
-            if cmm_flip[y, x] > 0:
-                if percentage:
-                    plt.text(x, y, '%.3f' % ((cmm_flip[y, x] / cmm.sum())),
-                         horizontalalignment='center',
-                         verticalalignment='center')
-                else:
-                    plt.text(x, y, '%.0i' % cmm_flip[y, x],
-                         horizontalalignment='center',
-                         verticalalignment='center')
     
-    if filename is not None:
-        plt.savefig(filename, dpi=300)
-    else: 
-        plt.show()
+    if classification_type is None:
+        from pandas.api.types import is_list_like
+        classification_type = "multi-label" if is_list_like(y_true[0]) else None 
+
+    if label2index is None:
+        from fhnw.nlp.utils.helpers import get_unique_elements
+        
+        all_labels = list(set(get_unique_elements(y_true) + get_unique_elements(y_pred)))
+        all_labels.sort()
+        label2index = {label: idx for idx, label in enumerate(all_labels)}
+    else:
+        all_labels = list(label2index.keys())
+        all_labels.sort()
+    
+    if classification_type == "multi-label":
+        from sklearn.metrics import multilabel_confusion_matrix
+
+        if encoding is None:
+            from fhnw.nlp.utils.helpers import get_encoding
+            encoding = get_encoding(y_true)
+        
+        if encoding != "one-hot":
+            from fhnw.nlp.utils.helpers import labels_to_one_hot
+            
+            y_true = labels_to_one_hot(y_true, label2index)
+            y_pred = labels_to_one_hot(y_pred, label2index)
+        
+        cmms = multilabel_confusion_matrix(y_true, y_pred)
+        clazzes = [["others", clazz] for clazz in all_labels]
+    else:
+        from sklearn.metrics import confusion_matrix
+        
+        cmms = [confusion_matrix(y_true, y_pred)]
+        clazzes = [all_labels]
+
+    for i in range(len(cmms)):
+        cmm = cmms[i]
+        classes = clazzes[i]
+        print('Set Population: {}'.format(cmm.sum()))
+        print('Accuracy: {:.4f}'.format(float(cmm.trace()) / cmm.sum()))
+
+        plt.figure(figsize=(10, 8))
+        plt.imshow(np.flip(cmm / cmm.sum(), 0), interpolation='nearest', cmap='Blues')
+        plt.title(title)
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+        plt.colorbar()
+
+        plt.ylim(-0.5, len(classes)-0.5)
+
+        if classes is not None:
+            tick_marks = np.arange(len(classes))
+            #plt.xticks(tick_marks, classes, rotation=45, size='x-large')
+            plt.xticks(tick_marks, classes, rotation=90, size='x-large')
+            plt.yticks(np.flip(tick_marks), classes, size='x-large')
+
+        cmm_flip = np.flip(cmm, 0)
+        for y in range(cmm.shape[0]):
+            for x in range(cmm.shape[1]):               
+                if cmm_flip[y, x] > 0:
+                    if percentage:
+                        plt.text(x, y, '%.2f' % ((cmm_flip[y, x] / cmm.sum())),
+                             horizontalalignment='center',
+                             verticalalignment='center')
+                    else:
+                        plt.text(x, y, '%.0i' % cmm_flip[y, x],
+                             horizontalalignment='center',
+                             verticalalignment='center')
+    
+        if filename is not None:
+            plt.savefig(filename, dpi=300)
+        else: 
+            plt.show()
         
 
 def create_word_cloud(df, label, field="token_lemma"):
@@ -257,36 +300,58 @@ def predict_and_report_classification_results(params, data, model):
     y, y_pred, y_pred_prob = predict_classification(params, data, model)
     report_classification_results(params, y, y_pred)
 
-def report_classification_results(params, y, y_pred):
+
+def report_classification_results(params, y_true, y_pred):
     """Reports all classification results
 
     Parameters: 
         params: dict
             The dictionary containing the parameters
-        y: list
+        y_true: list
             The true labels
         y_pred: list
             The predicted labels
     """
     
     import os
+    import pandas as pd
+    from pandas.api.types import is_list_like
     from sklearn.metrics import classification_report
+    from fhnw.nlp.utils.helpers import get_unique_elements
     
-    verbose = params.get("verbose", False)
     path = params.get("model_path")
+
+    classification_type = "multi-label" if is_list_like(y_true[0]) else None       
+    
+    all_labels = list(set(get_unique_elements(y_true) + get_unique_elements(y_pred)))
+    all_labels.sort()
+    label2index = {label: idx for idx, label in enumerate(all_labels)}
+
+    if classification_type == "multi-label":
+        from fhnw.nlp.utils.helpers import labels_to_one_hot
+
+        encoding = "one-hot"
+        labels = list(label2index.values())
+        target_names = list(label2index.keys())
+        y_true = labels_to_one_hot(y_true, label2index)
+        y_pred = labels_to_one_hot(y_pred, label2index)
+    else:
+        encoding = None
+        labels = None
+        target_names = None
     
     if path is not None:
         path_confusion_matrix = os.path.join(path, "confusion_matrix.png")
-        plot_confusion_matrix(y, y_pred, filename=path_confusion_matrix)
-    if verbose:
-        plot_confusion_matrix(y, y_pred)
-        
+        plot_confusion_matrix(y_true, y_pred, label2index=label2index, classification_type=classification_type, encoding=encoding, filename=path_confusion_matrix)
+    else:
+        plot_confusion_matrix(y_true, y_pred, label2index=label2index, classification_type=classification_type, encoding=encoding)
+    
     if path is not None:
         path_classification_report = os.path.join(path, "classification_report.csv")
-        report = classification_report(y, y_pred, output_dict=True)
-        report = pandas.DataFrame(report).transpose()
+        report = classification_report(y_true, y_pred, output_dict=True)
+        report = pd.DataFrame(report).transpose()
         report.to_csv(path_classification_report)
-    if verbose:
-        report = classification_report(y, y_pred)
+    else:
+        report = classification_report(y_true, y_pred, labels=labels, target_names=target_names)
         print(report)
         
