@@ -182,6 +182,7 @@ def dataframes_to_dataset(params, data, data_test=None, data_validation=None):
 
     from fhnw.nlp.utils.params import get_classification_type
     from fhnw.nlp.utils.params import get_train_test_split
+    from fhnw.nlp.utils.transformers import dataframe_to_dataset
     
     from datasets import ClassLabel
     from datasets import Dataset
@@ -254,7 +255,8 @@ def dataframes_to_dataset(params, data, data_test=None, data_validation=None):
     columns_to_remove.remove(X_column_name)
     columns_to_remove.remove(y_column_name)
     dataset_dict = dataset_dict.remove_columns(columns_to_remove)
-    dataset_dict = dataset_dict.rename_column(y_column_name, label_column_name)
+    if y_column_name != label_column_name:
+        dataset_dict = dataset_dict.rename_column(y_column_name, label_column_name)
     
     return dataset_dict
 
