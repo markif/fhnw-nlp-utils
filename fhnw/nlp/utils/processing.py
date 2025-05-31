@@ -240,3 +240,34 @@ def identity(x):
         The received object
     """
     return x
+    
+    
+def get_delayed(getter_func, delay_sec=10):
+    """Asynchronically calls a getter function with a specified delay. 
+
+    Parameters
+    ----------
+    getter_func : func
+        The getter function to call
+    delay_sec: int
+        The delay in second
+        
+    Returns
+    -------
+    future
+        The future to get the retrieved value (call future.result())
+    """
+    
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    executor = ThreadPoolExecutor(max_workers=1)
+
+    def retrieve():
+        time.sleep(delay_sec)
+        val = getter_func()
+        executor.shutdown(False)  # non-blocking
+        return val
+    
+    
+    return executor.submit(retrieve)

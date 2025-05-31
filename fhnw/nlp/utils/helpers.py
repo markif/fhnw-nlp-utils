@@ -243,7 +243,7 @@ def one_hot_to_indices(one_hot, classification_type = "binary"):
         return np.argmax(one_hot, axis=-1)    
     
     
-def predict_from_logits(logits, num_labels, classification_type = "binary", encoding = "index", index2label = {}, prediction_probability_threshold = 0.5):
+def predict_from_logits(logits, num_labels, classification_type = "binary", encoding = "index", index2label = {}, prediction_probability_thresholds_by_index = {}):
     """Converts logits into predictions
 
     Parameters
@@ -258,8 +258,8 @@ def predict_from_logits(logits, num_labels, classification_type = "binary", enco
         The encoding of the prediction (index, one-hot, label, probs)
     index2label: dict
         The mapping from the one-hot index to the label
-    prediction_probability_threshold: float
-        The probability threshold when the sigmoid value of a multi-label class is considered as predicted
+    prediction_probability_thresholds_by_index: dict
+        The probability thresholds by index when the sigmoid value of a multi-label class is considered as predicted
         
     Returns
     -------
@@ -290,10 +290,10 @@ def predict_from_logits(logits, num_labels, classification_type = "binary", enco
     if encoding == "probs":
         return probs
     else:
-        return predict_from_probs(probs, num_labels, classification_type, encoding, index2label, prediction_probability_threshold)
+        return predict_from_probs(probs, num_labels, classification_type, encoding, index2label, prediction_probability_thresholds_by_index)
 
 
-def predict_from_probs(probs, num_labels, classification_type = "binary", encoding = "index", index2label = {}, prediction_probability_threshold = 0.5):
+def predict_from_probs(probs, num_labels, classification_type = "binary", encoding = "index", index2label = {}, prediction_probability_thresholds_by_index = {}):
     """Converts probabilities into predictions
 
     Parameters
@@ -308,8 +308,8 @@ def predict_from_probs(probs, num_labels, classification_type = "binary", encodi
         The encoding of the prediction (index, one-hot, label, probs)
     index2label: dict
         The mapping from the one-hot index to the label
-    prediction_probability_threshold: float
-        The probability threshold when the sigmoid value of a multi-label class is considered as predicted
+    prediction_probability_thresholds_by_index: dict
+        The probability thresholds by index when the sigmoid value of a multi-label class is considered as predicted
         
     Returns
     -------
@@ -321,7 +321,19 @@ def predict_from_probs(probs, num_labels, classification_type = "binary", encodi
     
     if classification_type == "multi-label":
         y_pred = np.zeros(probs.shape)
-        y_pred[np.where(probs >= prediction_probability_threshold)] = 1
+        
+        prediction_probability_thresholds_by_index = dict(sorted(prediction_probability_thresholds_by_index.items()))
+        unique_prediction_probability_thresholds = set(prediction_probability_thresholds_by_index.values())
+        
+        if len(unique_prediction_probability_thresholds) <= 1:
+            prediction_probability_threshold = next(iter(unique_prediction_probability_thresholds), 0.5)
+            y_pred[np.where(probs >= prediction_probability_threshold)] = 1
+        else:
+            for i in range(probs.shape[1]):
+                prediction_probability_threshold = prediction_probability_thresholds_by_index.get(i, 0.5)
+                mask = np.where(probs[i] >= prediction_probability_threshold)
+                y_pred[i][mask] = 1
+        
         if encoding == "one-hot":
             return y_pred
 

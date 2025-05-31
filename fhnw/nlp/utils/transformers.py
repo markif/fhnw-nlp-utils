@@ -198,11 +198,11 @@ def dataframes_to_dataset(params, data, data_test=None, data_validation=None):
     data_all = data
     if data_test is not None:
         data_test = data_test.drop(labels=data_test.columns.difference([X_column_name, y_column_name]), axis=1)
-        data_all = pd.concat([data_all, data_test], axis=1)
+        data_all = pd.concat([data_all, data_test])
     if data_validation is not None:
         data_validation = data_validation.drop(labels=data_validation.columns.difference([X_column_name, y_column_name]), axis=1)
-        data_all = pd.concat([data_all, data_validation], axis=1)
-
+        data_all = pd.concat([data_all, data_validation])
+    
     label_column_name = None
     class_names = None
     cast_type = None
@@ -251,10 +251,7 @@ def dataframes_to_dataset(params, data, data_test=None, data_validation=None):
     dataset_dict = DatasetDict({"train":dataset_train, "validation":dataset_validation, "test":dataset_test})
 
     # some cleanup
-    columns_to_remove = set(sum(dataset_dict.column_names.values(), []))
-    columns_to_remove.remove(X_column_name)
-    columns_to_remove.remove(y_column_name)
-    dataset_dict = dataset_dict.remove_columns(columns_to_remove)
+    dataset_dict = dataset_dict.select_columns([X_column_name, y_column_name])
     if y_column_name != label_column_name:
         dataset_dict = dataset_dict.rename_column(y_column_name, label_column_name)
     
