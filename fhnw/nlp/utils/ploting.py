@@ -86,7 +86,7 @@ def plot_confusion_matrix(y_true, y_pred, title='', percentage=True, filename=No
     
     if classification_type is None:
         from pandas.api.types import is_list_like
-        classification_type = "multi-label" if is_list_like(y_true[0]) else None 
+        classification_type = "multi-label" if is_list_like(y_true.iloc[0] if isinstance(y_true, pd.DataFrame) or isinstance(y_true, pd.Series) else y_true[0]) else None  
 
     if label2index is None:
         from fhnw.nlp.utils.helpers import get_unique_elements

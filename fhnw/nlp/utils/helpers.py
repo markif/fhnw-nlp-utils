@@ -46,7 +46,7 @@ def get_unique_elements(elements, sort=True):
         The unique elements
     """
     
-    #import pandas as pd
+    import pandas as pd
     from pandas.api.types import is_list_like
     
     #unique_elements = pd.Series(elements)
@@ -58,7 +58,7 @@ def get_unique_elements(elements, sort=True):
     
     unique_elements = set()
     # check for multi-label
-    list_like = is_list_like(elements[0])
+    list_like = is_list_like(elements.iloc[0] if isinstance(elements, pd.DataFrame) or isinstance(elements, pd.Series) else elements[0])
     
     for element in elements:
         if list_like is True:
