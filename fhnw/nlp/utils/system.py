@@ -99,31 +99,38 @@ def system_info():
     except Exception as e:
     	print("Error in 'psutil':", e)
     	pass
-
-    gpu_available = False
+    
+    try:
+        # alternative with nvidia_smi https://gist.github.com/s-mawjee/ad0d8e0c7e07265cae097899fe48c023
+        import torch
+        
+        torch_version = str(torch.__version__)
+        
+        if torch.cuda.is_available():
+            number_of_gpus = torch.cuda.device_count()
+            for i in range(number_of_gpus):
+                gpu = torch.cuda.get_device_properties(torch.cuda.device(i))
+                if number_of_gpus == 1:
+                    s = s + os.linesep + "GPU is a "+ str(gpu.name) +" with "+ str(round(gpu.total_memory/1024**2)) + "MB"
+                else:
+                    s = s + os.linesep + str(i + 1) + ". GPU is a "+ str(gpu.name) +" with "+ str(round(gpu.total_memory/1024**2)) + "MB"
+        else:
+            s = s + os.linesep + "GPU is NOT AVAILABLE"
+            
+        s = s + os.linesep + "Torch version: " + str(torch.__version__)
+    except ImportError as e:
+        pass
+    except Exception as e:
+    	print("Error in 'torch':", e)
+    	pass
+    	
     try:
         import tensorflow as tf
         s = s + os.linesep + "Tensorflow version: " + str(tf.__version__)
-        
-        gpu_available = tf.config.list_physical_devices("GPU")
-        s = s + os.linesep + "GPU is " + ("available" if gpu_available else "NOT AVAILABLE")
     except ImportError as e:
         pass
     except Exception as e:
     	print("Error in 'tensorflow':", e)
-    	pass
-        
-    try:
-        import igpu
-
-        gpu_count = igpu.count_devices()
-        for i in range(gpu_count):
-           gpu = igpu.get_device(i)
-           s = s + os.linesep + "GPU is a "+ str(gpu.name) +" with "+ str(round(gpu.memory.total)) + str(gpu.memory.unit)
-    except ImportError as e:
-        pass
-    except Exception as e:
-    	print("Error in 'igpu':", e)
     	pass
     
     return s
