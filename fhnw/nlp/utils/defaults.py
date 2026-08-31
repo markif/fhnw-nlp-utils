@@ -1,7 +1,8 @@
 class NLPUtilsDefaults():
     
     def __init__(self):
-        import multiprocess as mp
+        #import multiprocess as mp
+        import billiard as mp       # Fix: AssertionError: daemonic processes are not allowed to have children
         
         self.lock = mp.Manager().Lock()
         self.stemmer = None
