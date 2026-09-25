@@ -43,9 +43,10 @@ def get_gpu_device_number():
         The GPU device number of -1 if none is installed
     """
         
-    import tensorflow as tf
+    import torch
+
+    return 0 if torch.cuda.is_available() else -1
     
-    return 0 if tf.config.list_physical_devices("GPU") else -1
 
 def get_compute_device():
     """Provides the device for the computation

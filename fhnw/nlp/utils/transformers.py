@@ -8,11 +8,9 @@ def get_compute_device():
         The GPU device with number (cuda:0) or cpu
     """
     
-    #import torch
-    #return "cuda:0" if torch.cuda.is_available() else "cpu"
-        
-    import tensorflow as tf
-    return "cuda:0" if tf.config.list_physical_devices("GPU") else "cpu"
+    import torch
+
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
 
 
 def gpu_empty_cache():
@@ -20,11 +18,9 @@ def gpu_empty_cache():
     
     """
     
-    import tensorflow as tf
+    import torch
     
-    #if torch.cuda.is_available():
-    if tf.config.list_physical_devices("GPU"):
-        import torch
+    if torch.cuda.is_available():
         torch.cuda.empty_cache()
         
 
