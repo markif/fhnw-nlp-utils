@@ -18,6 +18,12 @@ Model specs are plain dicts:
     {"repo": "<hf repo id>", "file": "<file or glob to download>", "variant": "<GGUF quant tag>"}
 "file" and "variant" are only needed for GGUF repos.
 
+Decision model specs (Laya, served on /v1/systemone, see unsloth.ai/docs/models/decision-laya):
+    {"name": "<catalog name>", "device": "gpu" | "cpu"}
+"name" is one of Unsloth's catalog names: "laya-multilingual" (default), "laya-english",
+"laya-typed-decisions". Missing keys use the defaults {"name": "laya-multilingual", "device": "gpu"}.
+run_llms() enables the Decision API, downloads the model and loads it onto its device.
+
 ----------------------------------------------------------------------------------------------
 Everything at once (recommended):
 
@@ -27,11 +33,29 @@ Everything at once (recommended):
         embedding_model={"repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
                          "file": "nomic-embed-text-v1.5.f16.gguf", "variant": "f16"},
     )
+    # -> the Decision API is set up as well, with the default decision model
+    #    {"name": "laya-multilingual", "device": "gpu"}
+
+    # The same with the decision model configured explicitly:
+    stack = run_llms(
+        model={"repo": "unsloth/Qwen3.5-4B-GGUF",
+               "file": "Qwen3.5-4B-UD-Q4_K_XL.gguf", "variant": "UD-Q4_K_XL"},
+        embedding_model={"repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
+                         "file": "nomic-embed-text-v1.5.f16.gguf", "variant": "f16"},
+        decision_model={"name": "laya-multilingual", "device": "gpu"},
+    )
+
     healthcheck(stack)                               # call as often as you like
     test_chat(stack["public_url"], stack["api_key"])
     test_embeddings(stack["public_url"], stack["api_key"],
                     model=stack["embedding_model_name"])
+    test_decision(stack["public_url"], stack["api_key"])  # Laya, loaded on GPU by default
     shutdown(stack)
+
+    # Other decision model setups:
+    #   run_llms(..., decision_model={"name": "laya-multilingual", "device": "cpu"})  # on the CPU
+    #   run_llms(..., decision_model={"name": "laya-english"})       # English model, on the GPU
+    #   run_llms(..., decision_model=None)                           # no Decision API
 
 ----------------------------------------------------------------------------------------------
 Step by step:
@@ -57,6 +81,14 @@ Step by step:
     test_chat(tunnel["url"], server["api_key"])
 
     configure_model_switching(server["port"], server["api_key"])        # "Switch model by request"
+
+    # Decision API with Laya (download, enable, load on GPU, try it)
+    download_decision_model("laya-multilingual")
+    configure_decision_api(server["port"], server["api_key"], model="laya-multilingual", device="gpu")
+    load_decision_model(server["port"], server["api_key"])
+    test_decision(tunnel["url"], server["api_key"])
+    diagnose_decision_api()     # if Laya fails to load: shows the hidden root cause
+
     load_model(server["port"], server["api_key"], "Qwen/Qwen3.5-4B")    # swap model, no restart
     stop_process(tunnel["process"]); stop_process(server["process"])
 """
@@ -134,11 +166,28 @@ def _install(name: str, install_fn, is_complete=None) -> str:
     return exe
 
 
+def _isolated_python_env(extra: dict | None = None) -> dict:
+    """Environment for programs that run in their own Python environment (Unsloth's venv).
+
+    Notebook kernels often export PYTHONPATH and friends (Colab does), and a child process
+    inherits them. Unsloth's venv would then import packages from the notebook's Python
+    next to its own pinned ones - with the same Python version on both sides this mixes
+    e.g. torch, transformers or kernels builds. Dropping these variables keeps the venv
+    on its own packages."""
+    import os
+
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+                        "PYTHONEXECUTABLE", "VIRTUAL_ENV", "CONDA_PREFIX")}
+    env["PYTHONNOUSERSITE"] = "1"          # ignore ~/.local/lib/pythonX.Y/site-packages
+    return {**env, **(extra or {})}
+
+
 def _start_background(cmd: list[str], log_file: str, ready_regex: str,
                       timeout: float, env: dict | None = None):
     """Start a long-running process, mirror its output to `log_file` and block until a line
     matches `ready_regex`. Output keeps being drained afterwards, so the process never stalls
-    on a full pipe. Returns (process, match)."""
+    on a full pipe. `env` replaces the inherited environment when given. Returns (process, match)."""
     import os
     import re
     import subprocess
@@ -149,7 +198,7 @@ def _start_background(cmd: list[str], log_file: str, ready_regex: str,
     log_path.parent.mkdir(parents=True, exist_ok=True)
     proc = subprocess.Popen(
         cmd, text=True, bufsize=1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        env={**os.environ, "PYTHONUNBUFFERED": "1", **(env or {})},
+        env={**(os.environ if env is None else env), "PYTHONUNBUFFERED": "1"},
     )
     pattern, ready, found = re.compile(ready_regex), threading.Event(), {}
 
@@ -192,7 +241,10 @@ def _request(method: str, url: str, api_key: str | None = None, payload: dict | 
             return json.loads(response.read() or b"{}")
     except urllib.error.HTTPError as exc:
         body = exc.read()[:300].decode(errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} from {url}: {body}") from None
+        error = RuntimeError(f"HTTP {exc.code} from {url}: {body}")
+        error.status = exc.code                                  # lets callers react to e.g. 503
+        error.retry_after = exc.headers.get("Retry-After")
+        raise error from None
 
 
 def _http_status(url: str, api_key: str | None = None, timeout: float = 10) -> int:
@@ -224,6 +276,19 @@ def _embedding_env(embedding_model: str | dict | None) -> dict:
     if embedding_model.get("variant"):
         env["RAG_EMBED_GGUF_VARIANT"] = embedding_model["variant"]
     return env
+
+
+def _laya_download_spec(model: str) -> dict:
+    """Hugging Face files of a Laya decision model, mirroring Unsloth's catalog
+    (core/systemone/catalog.py): only the weights, config, encoder and tokenizer are needed."""
+    subfolders = {"laya-multilingual": "multilingual", "laya-english": "",
+                  "laya-typed-decisions": "typed-decisions"}
+    if model not in subfolders:
+        raise ValueError(f"Unknown decision model {model!r}; choose one of {', '.join(subfolders)}.")
+    prefix = f"{subfolders[model]}/" if subfolders[model] else ""
+    return {"repo": "convaiinnovations/laya",
+            "file": [f"{prefix}rl_agent_config.json", f"{prefix}model.safetensors",
+                     f"{prefix}encoder/*", f"{prefix}tokenizer/*"]}
 
 
 def _print_client_settings(url: str, api_key: str | None) -> None:
@@ -300,16 +365,17 @@ def install_cloudflared() -> str:
 
 # =========================================================================== models
 
-def download_model(repo_id: str, include: str | None = None, quiet: bool = False) -> None:
+def download_model(repo_id: str, include: str | list[str] | None = None, quiet: bool = False) -> None:
     """Download into the Hugging Face cache, where Unsloth finds it automatically.
-    GGUF repos: pass the file (or a glob) via `include` to avoid fetching every quant.
-    Safetensors repos: leave `include` empty to get the whole model.
+    GGUF repos: pass the file (or a glob, or a list of them) via `include` to avoid
+    fetching every quant. Safetensors repos: leave `include` empty to get the whole model.
     Gated models: set HF_TOKEN (e.g. from Colab secrets) first."""
     import subprocess
 
     hf = _require_exe("hf", "install_hf")
-    cmd = [hf, "download", repo_id] + (["--include", include] if include else [])
-    label = f"{repo_id}{f' ({include})' if include else ''}"
+    patterns = [include] if isinstance(include, str) else list(include or [])
+    cmd = [hf, "download", repo_id] + [arg for p in patterns for arg in ("--include", p)]
+    label = repo_id + (f" ({', '.join(patterns)})" if patterns else "")
     print(f"⏳ Downloading {label} ...")
     r = subprocess.run(cmd, text=True, capture_output=quiet)
     if r.returncode != 0:
@@ -356,6 +422,269 @@ def configure_model_switching(port: int, api_key: str, enabled: bool = True,
     return result
 
 
+# =========================================================================== decision models
+
+def _wait_for_server_warmup(port: int, timeout: float = 900) -> None:
+    """Block until the Unsloth server has finished its startup warm-up.
+
+    Right after start, the server imports torch/transformers on a background thread
+    ("torch warm"). Loading Laya meanwhile imports ModernBERT, which reaches torch._dynamo
+    (transformers.masking_utils) - two threads inside that import can leave a half-built
+    module in sys.modules, and every later ModernBERT import in that server process then
+    fails with "Could not import module 'ModernBertModel'". /api/health reports
+    torch_warm_in_progress while the warm runs."""
+    import time
+
+    deadline, announced = time.monotonic() + timeout, False
+    while True:
+        health = _request("GET", f"http://127.0.0.1:{port}/api/health", timeout=30)
+        if not health.get("torch_warm_in_progress") and not health.get("hardware_detecting"):
+            if announced:
+                print("✅ Server warm-up finished.")
+            return
+        if not announced:
+            print("⏳ Waiting for the server's startup warm-up (torch/transformers imports) ...")
+            announced = True
+        if time.monotonic() > deadline:
+            print(f"⚠️  Server warm-up still running after {timeout:.0f}s - continuing anyway.")
+            return
+        time.sleep(2)
+
+
+def download_decision_model(model: str = "laya-multilingual", quiet: bool = False) -> None:
+    """Pre-download a Laya decision model into the Hugging Face cache (Unsloth would
+    otherwise fetch it on the first decision request)."""
+    spec = _laya_download_spec(model)
+    download_model(spec["repo"], include=spec["file"], quiet=quiet)
+
+
+def configure_decision_api(port: int, api_key: str, enabled: bool = True,
+                           model: str = "laya-multilingual", device: str = "gpu") -> dict:
+    """Set Unsloth's Decision API (Settings > API > Decision API in the web UI):
+    serve /v1/systemone, which Laya model answers it, and whether it runs on "gpu" or "cpu".
+    Stored by Unsloth, so it survives server restarts. Changing it unloads a loaded Laya."""
+    if device not in ("gpu", "cpu"):
+        raise ValueError('device must be "gpu" or "cpu".')
+    result = _request("PUT", f"http://127.0.0.1:{port}/api/settings/systemone", api_key,
+                      {"enabled": enabled, "model": model, "device": device}, timeout=60)
+    print(f"✅ Decision API: {'on' if result.get('enabled') else 'off'}, model {result.get('model')}, "
+          f"device {result.get('device')}")
+    if device == "gpu" and not result.get("gpu_available", True):
+        print("⚠️  Unsloth sees no usable GPU - the decision model will run on the CPU.")
+    return result
+
+
+def load_decision_model(port: int, api_key: str, model: str = "laya",
+                        timeout: float = 600) -> dict:
+    """Load the decision model now instead of on the first real request, so it sits in
+    (GPU) memory. Waits for the server's startup warm-up first (see
+    _wait_for_server_warmup), then sends one tiny decision request and retries while
+    Unsloth reports it as loading or downloading. Returns the settings response,
+    including "loaded_model" and "loaded_device"."""
+    import time
+
+    base = f"http://127.0.0.1:{port}"
+    _wait_for_server_warmup(port)          # avoids a torch._dynamo import race in the server
+    payload = {"model": model, "state": "warm-up",
+               "questions": {"ok": {"type": "noul", "instructions": "Is this a test?"}}}
+    print(f"⏳ Loading decision model {model} ...")
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            _request("POST", f"{base}/v1/systemone", api_key, payload, timeout=120)
+            break
+        except RuntimeError as exc:
+            # 503 means "still loading/downloading" (retry) or "loading failed" (error_type
+            # model_unavailable, won't change on retry - fail at once with Unsloth's reason).
+            loading = getattr(exc, "status", None) == 503 and "model_loading" in str(exc)
+            if not loading or time.monotonic() > deadline:
+                raise
+            time.sleep(min(10.0, float(getattr(exc, "retry_after", None) or 5)))
+
+    settings = _request("GET", f"{base}/api/settings/systemone", api_key, timeout=30)
+    loaded, device = settings.get("loaded_model"), str(settings.get("loaded_device") or "")
+    print(f"✅ Decision model {loaded} loaded on {device or 'unknown device'}")
+    if settings.get("device") == "gpu" and device.startswith("cpu"):
+        print("⚠️  GPU was requested, but Laya runs on the CPU (no usable GPU or not enough "
+              "GPU memory).")
+    return settings
+
+
+def _server_log_excerpt(marker: str = "System One load failed", max_lines: int = 150) -> dict | None:
+    """Last log entry containing `marker` in Unsloth's server logs, with its traceback.
+
+    The server tees all output to ~/.unsloth/studio/logs/server/server-<time>-pid<pid>.log
+    (also with --silent); a logged exception is followed by a readable copy of the
+    traceback on lines prefixed with "| ". Our own mirror of the server output is searched
+    as a fallback. Returns {"file", "text"} or None."""
+    import re
+    from pathlib import Path
+
+    candidates = sorted((Path.home() / ".unsloth" / "studio" / "logs" / "server").glob("*.log"),
+                        key=lambda f: f.stat().st_mtime, reverse=True)
+    candidates.append(Path(_log_path("unsloth")))
+    record_start = re.compile(r'^(\{"timestamp"|\d{4}-\d{2}-\d{2}[T ])')
+    for log_file in candidates:
+        try:
+            lines = log_file.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        hits = [i for i, line in enumerate(lines) if marker in line]
+        if not hits:
+            continue
+        start = hits[-1]
+        excerpt = [lines[start]]
+        for line in lines[start + 1:start + max_lines]:
+            if record_start.match(line):          # next log record: the traceback is over
+                break
+            excerpt.append(line)
+        return {"file": str(log_file), "text": "\n".join(excerpt)}
+    return None
+
+
+def diagnose_decision_api(verbose: bool = True, model: str = "laya-multilingual") -> dict:
+    """Find out why Unsloth cannot load the Laya encoder (e.g. "Could not import module
+    'ModernBertModel'", which transformers raises for ANY error inside the import and so
+    hides the real cause).
+
+    1. Shows the failure as the server itself logged it, with the full traceback from
+       Unsloth's server log - this is the decisive part, because the error can depend on
+       the state of the running server process.
+    2. Runs the same lookup in a fresh process of Unsloth's own Python twice - with the
+       notebook's environment and with the isolated one serve_unsloth() uses - and prints
+       package versions, foreign sys.path entries and any root-cause traceback.
+    3. Loads `model` with Unsloth's own server code (core.systemone.laya_runtime) in a
+       fresh process of Unsloth's Python and prints the complete traceback if it fails -
+       the server itself only logs the one-line message.
+    Returns {"server_log", "python", "inherited", "isolated", "load"}; the last three are
+    {"ok", "output"}."""
+    import os
+    import subprocess
+    from pathlib import Path
+
+    launcher = _require_exe("unsloth", "install_unsloth")
+    python = Path(os.path.realpath(launcher)).parent / "python"
+    if not python.exists():
+        python = Path.home() / ".unsloth" / "studio" / "unsloth_studio" / "bin" / "python"
+    if not python.exists():
+        raise RuntimeError("Could not find Unsloth's Python environment.")
+
+    probe = r"""
+import sys, traceback, importlib.metadata as md
+print("python", sys.version.split()[0])
+for pkg in ("torch", "transformers", "huggingface_hub", "kernels", "triton", "tokenizers"):
+    try:
+        print(f"  {pkg:16} {md.version(pkg)}")
+    except Exception:
+        print(f"  {pkg:16} -")
+own = (sys.prefix, sys.base_prefix)
+foreign = [p for p in sys.path if p and not p.startswith(own) and not p.endswith(".zip")]
+print("foreign sys.path:", foreign or "none")
+try:
+    import transformers
+    transformers.ModernBertModel
+    print("RESULT OK")
+except Exception as exc:
+    chain, cur = [], exc
+    while cur is not None and cur not in chain:
+        chain.append(cur)
+        cur = cur.__cause__ or cur.__context__
+    print("error chain:")
+    for err in chain:
+        print(f"  -> {type(err).__name__}: {str(err)[:300]}")
+    print("root cause traceback:")
+    print("".join(traceback.format_exception(chain[-1]))[-3000:])
+    print("RESULT FAIL")
+"""
+    load_probe = r"""
+import logging, os, sys, sysconfig, traceback
+from pathlib import Path
+backend = Path(sysconfig.get_paths()["purelib"]) / "studio" / "backend"
+if not backend.is_dir():
+    import importlib.util
+    spec = importlib.util.find_spec("unsloth_cli")
+    backend = Path(spec.origin).resolve().parent.parent / "studio" / "backend"
+print("backend:", backend)
+sys.path.insert(0, str(backend))
+os.chdir(backend)
+os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")      # set by the server at startup
+logging.basicConfig(level=logging.WARNING)
+try:
+    from core.systemone import catalog, laya_runtime
+    agent, device = laya_runtime._load_checkpoint(catalog.CHECKPOINTS[sys.argv[1]])
+    print("RESULT OK - loaded on", device)
+except BaseException:
+    traceback.print_exc()                             # full chain incl. the hidden root cause
+    print("RESULT FAIL")
+"""
+
+    def run(env, code=probe, args=()):
+        r = subprocess.run([str(python), "-c", code, *args], capture_output=True, text=True,
+                           env=env, timeout=900)
+        output = (r.stdout + r.stderr).strip()
+        if len(output) > 6000:
+            output = output[:1500] + "\n   [...]\n" + output[-4500:]
+        return {"ok": "RESULT OK" in output, "output": output}
+
+    result = {"server_log": _server_log_excerpt(),
+              "python": str(python),
+              "inherited": run(dict(os.environ)),
+              "isolated": run(_isolated_python_env()),
+              "load": run(_isolated_python_env(), load_probe, (model,))}
+    if verbose:
+        log = result["server_log"]
+        if log:
+            print(f"📄 Decision model failure as logged by the server ({log['file']}):")
+            print("   " + log["text"].replace("\n", "\n   "))
+        else:
+            print("📄 No decision model failure found in the server logs.")
+        for name in ("inherited", "isolated"):
+            r = result[name]
+            print(f"{'✅' if r['ok'] else '❌'} ModernBERT import in Unsloth's Python, {name} environment:")
+            print("   " + r["output"].replace("\n", "\n   "))
+        r = result["load"]
+        print(f"{'✅' if r['ok'] else '❌'} Loading {model} with Unsloth's own code in a fresh process:")
+        print("   " + r["output"].replace("\n", "\n   "))
+        if result["isolated"]["ok"] and not result["inherited"]["ok"]:
+            print("➡️  The notebook's environment leaks into Unsloth's Python. serve_unsloth() "
+                  "isolates it - restart the server with serve_unsloth()/run_llms().")
+        elif not result["isolated"]["ok"]:
+            print("➡️  Unsloth's own environment is broken; the root cause is shown above.")
+        elif not result["load"]["ok"]:
+            print(f"➡️  Unsloth's code fails to load {model}; the traceback above shows the root cause.")
+        elif log:
+            print(f"➡️  {model} loads fine in a fresh process, so the failure depends on the state of "
+                  "the running server process - typically Laya was loaded while the server's "
+                  "startup warm-up was still importing torch. Restart the server (run_llms() now "
+                  "waits for the warm-up before loading Laya).")
+    return result
+
+
+def test_decision(base_url: str, api_key: str, model: str = "laya") -> dict:
+    """One decision request (the support-ticket example from Unsloth's docs).
+    `base_url`: tunnel URL or http://127.0.0.1:<port>."""
+    payload = {
+        "model": model,
+        "state": "Hi, I was charged twice for my March invoice (#4411). "
+                 "Please refund the duplicate today.",
+        "questions": {
+            "team": {"type": "choice", "instructions": "Which team should handle this?",
+                     "criteria": {"billing": "invoices, payments, refunds",
+                                  "technical": "bugs, outages, errors",
+                                  "sales": "pricing, new plans", "other": "everything else"}},
+            "refund": {"type": "noul", "instructions": "Does the customer ask for a refund?"},
+            "urgency": {"type": "score", "instructions": "How urgent is this?",
+                        "criteria": ["not urgent", "soon", "today"]},
+        },
+    }
+    result = _request("POST", f"{base_url.rstrip('/')}/v1/systemone", api_key, payload)
+    answers = result.get("answers", {})
+    print(f"✅ {result.get('model')}: team={answers.get('team', {}).get('choice')}, "
+          f"refund={answers.get('refund', {}).get('noul')}, "
+          f"urgency={answers.get('urgency', {}).get('score')}")
+    return result
+
+
 # =========================================================================== serving
 
 def serve_unsloth(model: str, variant: str | None = None, port: int = 8900,
@@ -382,7 +711,7 @@ def serve_unsloth(model: str, variant: str | None = None, port: int = 8900,
 
     print(f"⏳ Starting Unsloth API with {model_arg} (downloads the model if needed)...")
     proc, match = _start_background(cmd, log_file, r"API Key:\s+(\S+)", timeout,
-                                    _embedding_env(embedding_model))
+                                    _isolated_python_env(_embedding_env(embedding_model)))
 
     # The server moves to the next free port if the requested one is taken.
     ports = re.findall(r"http://(?:127\.0\.0\.1|localhost):(\d+)", Path(log_file).read_text())
@@ -492,7 +821,9 @@ def check_environment(verbose: bool = True) -> dict:
 
 def run_llms(model: dict, embedding_model: dict | None = None,
              predownload: dict[str, dict] | None = None, port: int = 8900,
-             expose: bool = True, switch_model_by_request: bool = True) -> dict:
+             expose: bool = True, switch_model_by_request: bool = True,
+             decision_model: dict | None = {"name": "laya-multilingual", "device": "gpu"},
+             ) -> dict:
     """Install, download, serve and expose everything, running independent steps in parallel.
 
     model:           spec of the chat model that gets loaded, {"repo", "file", "variant"}
@@ -504,27 +835,46 @@ def run_llms(model: dict, embedding_model: dict | None = None,
     switch_model_by_request:
                      let API requests load another downloaded model by naming it
                      (Unsloth's "Switch model by request"; on by default)
+    decision_model:  spec of the decision model for the Decision API (/v1/systemone),
+                     {"name": "laya-multilingual" | "laya-english" | "laya-typed-decisions",
+                      "device": "gpu" | "cpu"}; missing keys default to laya-multilingual on
+                     the GPU, None turns the Decision API off
 
     Parallel plan:
       1. install unsloth | hf | cloudflared                     (all at once)
       2. downloads start as soon as hf is ready (all at once, while unsloth still installs)
          tunnel starts as soon as cloudflared is ready (it only needs the port number)
       3. server starts once unsloth and all downloads are done, then model switching is set
+      4. Decision API is enabled and the decision model is loaded onto its device
 
     Returns a "stack" dict that healthcheck() and shutdown() understand."""
     from concurrent.futures import ThreadPoolExecutor
+
+    decision = None
+    if decision_model is not None:
+        unknown = set(decision_model) - {"name", "device"}
+        if unknown:
+            raise ValueError(f"Unknown decision_model key(s): {', '.join(sorted(unknown))}; "
+                             'use "name" and "device".')
+        decision = {"name": "laya-multilingual", "device": "gpu", **decision_model}
+        if decision["device"] not in ("gpu", "cpu"):
+            raise ValueError('decision_model["device"] must be "gpu" or "cpu".')
+        _laya_download_spec(decision["name"])        # fail fast on an unknown name
 
     environment = check_environment()
     if not environment["gpus"] and not model.get("variant"):
         print(f"⚠️  {model['repo']} is not a GGUF model; without a GPU use a GGUF variant instead.")
 
     stack = {"environment": environment, "switch_model_by_request": switch_model_by_request,
+             "decision": decision,
              "server": None, "tunnel": None, "public_url": None, "api_key": None,
              "model": model, "embedding_model": embedding_model,
              "embedding_model_name": _embedding_env(embedding_model).get("RAG_EMBEDDING_MODEL"),
              "predownload": predownload or {}}
 
-    specs = [model] + ([embedding_model] if embedding_model else []) + list((predownload or {}).values())
+    specs = ([model] + ([embedding_model] if embedding_model else [])
+             + ([_laya_download_spec(decision["name"])] if decision else [])
+             + list((predownload or {}).values()))
     try:
         with ThreadPoolExecutor(max_workers=8) as pool:
             f_unsloth = pool.submit(install_unsloth)
@@ -551,6 +901,23 @@ def run_llms(model: dict, embedding_model: dict | None = None,
                                           enabled=switch_model_by_request)
             except Exception as exc:
                 print(f"⚠️  Could not set 'Switch model by request': {exc}")
+
+            # Decision API: a failure only warns - chat and embeddings keep working.
+            try:
+                configure_decision_api(stack["server"]["port"], stack["api_key"],
+                                       enabled=decision is not None,
+                                       model=(decision or {}).get("name", "laya-multilingual"),
+                                       device=(decision or {}).get("device", "gpu"))
+                if decision:
+                    load_decision_model(stack["server"]["port"], stack["api_key"], decision["name"])
+            except Exception as exc:
+                print(f"⚠️  Decision API setup failed: {exc}")
+                if "Could not import module" in str(exc) or "ModuleNotFoundError" in str(exc):
+                    print("🔎 Looking for the root cause ...")
+                    try:
+                        diagnose_decision_api()
+                    except Exception as diag_exc:
+                        print(f"⚠️  Diagnosis failed: {diag_exc}")
 
             if f_tunnel:
                 stack["tunnel"] = f_tunnel.result()
@@ -586,7 +953,7 @@ def healthcheck(stack: dict, timeout: float = 10, check_embeddings: bool = False
 
     Checks: server process alive, /api/health, a model resident in memory
     (/api/inference/loaded-models, no disk scan), the server rejecting a wrong API key,
-    the "Switch model by request" setting,
+    the "Switch model by request" setting, the decision model being loaded on its device,
     tunnel process alive, and the full public path Cloudflare -> Unsloth.
     `check_embeddings=True` also embeds one short word (tiny load, off by default).
 
@@ -647,6 +1014,25 @@ def healthcheck(stack: dict, timeout: float = 10, check_embeddings: bool = False
                                    f"{'on' if stack['switch_model_by_request'] else 'off'}")
             return "on" if enabled else "off"
         run("model switching", switching)
+
+    if stack.get("decision"):
+        def decision():
+            st = _request("GET", f"{local}/api/settings/systemone", server["api_key"], timeout=timeout)
+            expected = stack["decision"]
+            device = str(st.get("loaded_device") or "")
+            if not st.get("enabled"):
+                raise RuntimeError("Decision API is off")
+            if st.get("error"):
+                raise RuntimeError(st["error"])
+            if st.get("loaded_model") != expected["name"]:
+                state = f"loading {st['loading_model']}" if st.get("loading_model") else \
+                        f"loaded: {st.get('loaded_model') or 'nothing'}"
+                raise RuntimeError(f"{expected['name']} not loaded ({state}); "
+                                   "call load_decision_model() or send a request")
+            if expected["device"] == "gpu" and device.startswith("cpu"):
+                raise RuntimeError(f"{expected['name']} fell back to the CPU")
+            return f"{st['loaded_model']} on {device}"
+        run("decision model", decision)
 
     if tunnel:
         run("tunnel process", lambda: alive(tunnel["process"]))
