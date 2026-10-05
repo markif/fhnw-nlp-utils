@@ -87,7 +87,6 @@ Step by step:
     configure_decision_api(server["port"], server["api_key"], model="laya-multilingual", device="gpu")
     load_decision_model(server["port"], server["api_key"])
     test_decision(tunnel["url"], server["api_key"])
-    diagnose_decision_api()     # if Laya fails to load: shows the hidden root cause
 
     load_model(server["port"], server["api_key"], "Qwen/Qwen3.5-4B")    # swap model, no restart
     stop_process(tunnel["process"]); stop_process(server["process"])
@@ -181,6 +180,53 @@ def _isolated_python_env(extra: dict | None = None) -> dict:
                         "PYTHONEXECUTABLE", "VIRTUAL_ENV", "CONDA_PREFIX")}
     env["PYTHONNOUSERSITE"] = "1"          # ignore ~/.local/lib/pythonX.Y/site-packages
     return {**env, **(extra or {})}
+
+
+def _server_hook_dir() -> str:
+    """Directory with a sitecustomize.py that serve_unsloth() puts on the server's PYTHONPATH.
+
+    Python runs it at interpreter start. In the server process (`unsloth run ...`) it
+    imports torch._dynamo right away, while the process is still single-threaded.
+
+    Why: Laya (Decision API) imports transformers, which reaches torch._dynamo via
+    transformers.masking_utils. If threads in the server race on that import, torch._dynamo
+    stays half-initialised for the life of the process ("partially initialized module
+    'torch._dynamo' has no attribute 'utils'") and every Laya load fails with "Could not
+    import module 'AutoTokenizer'" (or 'ModernBertModel'). Unsloth guards its other import
+    paths against this race, but not Laya's. A sitecustomize this one shadows still runs."""
+    from pathlib import Path
+
+    source = '''"""Added by jupyter_llms.serve_unsloth(server_hook=True): import torch._dynamo early."""
+import os as _os
+import sys as _sys
+
+
+def _is_server_process():
+    argv = [_os.path.basename(a) for a in _sys.argv[:3]]
+    return (bool(argv) and argv[0].startswith("unsloth") and "run" in argv[1:]) or "run.py" in argv[:1]
+
+
+if _is_server_process():
+    try:
+        import torch._dynamo.utils  # noqa: F401 - completes torch._dynamo single-threaded
+    except Exception:
+        pass                         # no torch: nothing to protect
+
+# Run the sitecustomize this file shadows, if there is one.
+import importlib.util as _ilu
+
+_here = _os.path.dirname(_os.path.abspath(__file__))
+for _entry in _sys.path:
+    _candidate = _os.path.join(_entry or ".", "sitecustomize.py")
+    if _os.path.abspath(_entry or ".") != _here and _os.path.isfile(_candidate):
+        _spec = _ilu.spec_from_file_location("_shadowed_sitecustomize", _candidate)
+        _spec.loader.exec_module(_ilu.module_from_spec(_spec))
+        break
+'''
+    hook_dir = Path.home() / ".cache" / "jupyter_llms" / "pyhooks"
+    hook_dir.mkdir(parents=True, exist_ok=True)
+    (hook_dir / "sitecustomize.py").write_text(source)
+    return str(hook_dir)
 
 
 def _start_background(cmd: list[str], log_file: str, ready_regex: str,
@@ -424,33 +470,6 @@ def configure_model_switching(port: int, api_key: str, enabled: bool = True,
 
 # =========================================================================== decision models
 
-def _wait_for_server_warmup(port: int, timeout: float = 900) -> None:
-    """Block until the Unsloth server has finished its startup warm-up.
-
-    Right after start, the server imports torch/transformers on a background thread
-    ("torch warm"). Loading Laya meanwhile imports ModernBERT, which reaches torch._dynamo
-    (transformers.masking_utils) - two threads inside that import can leave a half-built
-    module in sys.modules, and every later ModernBERT import in that server process then
-    fails with "Could not import module 'ModernBertModel'". /api/health reports
-    torch_warm_in_progress while the warm runs."""
-    import time
-
-    deadline, announced = time.monotonic() + timeout, False
-    while True:
-        health = _request("GET", f"http://127.0.0.1:{port}/api/health", timeout=30)
-        if not health.get("torch_warm_in_progress") and not health.get("hardware_detecting"):
-            if announced:
-                print("✅ Server warm-up finished.")
-            return
-        if not announced:
-            print("⏳ Waiting for the server's startup warm-up (torch/transformers imports) ...")
-            announced = True
-        if time.monotonic() > deadline:
-            print(f"⚠️  Server warm-up still running after {timeout:.0f}s - continuing anyway.")
-            return
-        time.sleep(2)
-
-
 def download_decision_model(model: str = "laya-multilingual", quiet: bool = False) -> None:
     """Pre-download a Laya decision model into the Hugging Face cache (Unsloth would
     otherwise fetch it on the first decision request)."""
@@ -477,14 +496,12 @@ def configure_decision_api(port: int, api_key: str, enabled: bool = True,
 def load_decision_model(port: int, api_key: str, model: str = "laya",
                         timeout: float = 600) -> dict:
     """Load the decision model now instead of on the first real request, so it sits in
-    (GPU) memory. Waits for the server's startup warm-up first (see
-    _wait_for_server_warmup), then sends one tiny decision request and retries while
-    Unsloth reports it as loading or downloading. Returns the settings response,
-    including "loaded_model" and "loaded_device"."""
+    (GPU) memory. Laya only loads on demand, so this sends one tiny decision request and
+    retries while Unsloth reports it as loading or downloading. Returns the settings
+    response, including "loaded_model" and "loaded_device"."""
     import time
 
     base = f"http://127.0.0.1:{port}"
-    _wait_for_server_warmup(port)          # avoids a torch._dynamo import race in the server
     payload = {"model": model, "state": "warm-up",
                "questions": {"ok": {"type": "noul", "instructions": "Is this a test?"}}}
     print(f"⏳ Loading decision model {model} ...")
@@ -508,156 +525,6 @@ def load_decision_model(port: int, api_key: str, model: str = "laya",
         print("⚠️  GPU was requested, but Laya runs on the CPU (no usable GPU or not enough "
               "GPU memory).")
     return settings
-
-
-def _server_log_excerpt(marker: str = "System One load failed", max_lines: int = 150) -> dict | None:
-    """Last log entry containing `marker` in Unsloth's server logs, with its traceback.
-
-    The server tees all output to ~/.unsloth/studio/logs/server/server-<time>-pid<pid>.log
-    (also with --silent); a logged exception is followed by a readable copy of the
-    traceback on lines prefixed with "| ". Our own mirror of the server output is searched
-    as a fallback. Returns {"file", "text"} or None."""
-    import re
-    from pathlib import Path
-
-    candidates = sorted((Path.home() / ".unsloth" / "studio" / "logs" / "server").glob("*.log"),
-                        key=lambda f: f.stat().st_mtime, reverse=True)
-    candidates.append(Path(_log_path("unsloth")))
-    record_start = re.compile(r'^(\{"timestamp"|\d{4}-\d{2}-\d{2}[T ])')
-    for log_file in candidates:
-        try:
-            lines = log_file.read_text(errors="replace").splitlines()
-        except OSError:
-            continue
-        hits = [i for i, line in enumerate(lines) if marker in line]
-        if not hits:
-            continue
-        start = hits[-1]
-        excerpt = [lines[start]]
-        for line in lines[start + 1:start + max_lines]:
-            if record_start.match(line):          # next log record: the traceback is over
-                break
-            excerpt.append(line)
-        return {"file": str(log_file), "text": "\n".join(excerpt)}
-    return None
-
-
-def diagnose_decision_api(verbose: bool = True, model: str = "laya-multilingual") -> dict:
-    """Find out why Unsloth cannot load the Laya encoder (e.g. "Could not import module
-    'ModernBertModel'", which transformers raises for ANY error inside the import and so
-    hides the real cause).
-
-    1. Shows the failure as the server itself logged it, with the full traceback from
-       Unsloth's server log - this is the decisive part, because the error can depend on
-       the state of the running server process.
-    2. Runs the same lookup in a fresh process of Unsloth's own Python twice - with the
-       notebook's environment and with the isolated one serve_unsloth() uses - and prints
-       package versions, foreign sys.path entries and any root-cause traceback.
-    3. Loads `model` with Unsloth's own server code (core.systemone.laya_runtime) in a
-       fresh process of Unsloth's Python and prints the complete traceback if it fails -
-       the server itself only logs the one-line message.
-    Returns {"server_log", "python", "inherited", "isolated", "load"}; the last three are
-    {"ok", "output"}."""
-    import os
-    import subprocess
-    from pathlib import Path
-
-    launcher = _require_exe("unsloth", "install_unsloth")
-    python = Path(os.path.realpath(launcher)).parent / "python"
-    if not python.exists():
-        python = Path.home() / ".unsloth" / "studio" / "unsloth_studio" / "bin" / "python"
-    if not python.exists():
-        raise RuntimeError("Could not find Unsloth's Python environment.")
-
-    probe = r"""
-import sys, traceback, importlib.metadata as md
-print("python", sys.version.split()[0])
-for pkg in ("torch", "transformers", "huggingface_hub", "kernels", "triton", "tokenizers"):
-    try:
-        print(f"  {pkg:16} {md.version(pkg)}")
-    except Exception:
-        print(f"  {pkg:16} -")
-own = (sys.prefix, sys.base_prefix)
-foreign = [p for p in sys.path if p and not p.startswith(own) and not p.endswith(".zip")]
-print("foreign sys.path:", foreign or "none")
-try:
-    import transformers
-    transformers.ModernBertModel
-    print("RESULT OK")
-except Exception as exc:
-    chain, cur = [], exc
-    while cur is not None and cur not in chain:
-        chain.append(cur)
-        cur = cur.__cause__ or cur.__context__
-    print("error chain:")
-    for err in chain:
-        print(f"  -> {type(err).__name__}: {str(err)[:300]}")
-    print("root cause traceback:")
-    print("".join(traceback.format_exception(chain[-1]))[-3000:])
-    print("RESULT FAIL")
-"""
-    load_probe = r"""
-import logging, os, sys, sysconfig, traceback
-from pathlib import Path
-backend = Path(sysconfig.get_paths()["purelib"]) / "studio" / "backend"
-if not backend.is_dir():
-    import importlib.util
-    spec = importlib.util.find_spec("unsloth_cli")
-    backend = Path(spec.origin).resolve().parent.parent / "studio" / "backend"
-print("backend:", backend)
-sys.path.insert(0, str(backend))
-os.chdir(backend)
-os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")      # set by the server at startup
-logging.basicConfig(level=logging.WARNING)
-try:
-    from core.systemone import catalog, laya_runtime
-    agent, device = laya_runtime._load_checkpoint(catalog.CHECKPOINTS[sys.argv[1]])
-    print("RESULT OK - loaded on", device)
-except BaseException:
-    traceback.print_exc()                             # full chain incl. the hidden root cause
-    print("RESULT FAIL")
-"""
-
-    def run(env, code=probe, args=()):
-        r = subprocess.run([str(python), "-c", code, *args], capture_output=True, text=True,
-                           env=env, timeout=900)
-        output = (r.stdout + r.stderr).strip()
-        if len(output) > 6000:
-            output = output[:1500] + "\n   [...]\n" + output[-4500:]
-        return {"ok": "RESULT OK" in output, "output": output}
-
-    result = {"server_log": _server_log_excerpt(),
-              "python": str(python),
-              "inherited": run(dict(os.environ)),
-              "isolated": run(_isolated_python_env()),
-              "load": run(_isolated_python_env(), load_probe, (model,))}
-    if verbose:
-        log = result["server_log"]
-        if log:
-            print(f"📄 Decision model failure as logged by the server ({log['file']}):")
-            print("   " + log["text"].replace("\n", "\n   "))
-        else:
-            print("📄 No decision model failure found in the server logs.")
-        for name in ("inherited", "isolated"):
-            r = result[name]
-            print(f"{'✅' if r['ok'] else '❌'} ModernBERT import in Unsloth's Python, {name} environment:")
-            print("   " + r["output"].replace("\n", "\n   "))
-        r = result["load"]
-        print(f"{'✅' if r['ok'] else '❌'} Loading {model} with Unsloth's own code in a fresh process:")
-        print("   " + r["output"].replace("\n", "\n   "))
-        if result["isolated"]["ok"] and not result["inherited"]["ok"]:
-            print("➡️  The notebook's environment leaks into Unsloth's Python. serve_unsloth() "
-                  "isolates it - restart the server with serve_unsloth()/run_llms().")
-        elif not result["isolated"]["ok"]:
-            print("➡️  Unsloth's own environment is broken; the root cause is shown above.")
-        elif not result["load"]["ok"]:
-            print(f"➡️  Unsloth's code fails to load {model}; the traceback above shows the root cause.")
-        elif log:
-            print(f"➡️  {model} loads fine in a fresh process, so the failure depends on the state of "
-                  "the running server process - typically Laya was loaded while the server's "
-                  "startup warm-up was still importing torch. Restart the server (run_llms() now "
-                  "waits for the warm-up before loading Laya).")
-    return result
 
 
 def test_decision(base_url: str, api_key: str, model: str = "laya") -> dict:
@@ -689,7 +556,8 @@ def test_decision(base_url: str, api_key: str, model: str = "laya") -> dict:
 
 def serve_unsloth(model: str, variant: str | None = None, port: int = 8900,
                   embedding_model: str | dict | None = None, extra_args: list[str] | None = None,
-                  log_file: str | None = None, timeout: float = 1800) -> dict:
+                  log_file: str | None = None, timeout: float = 1800,
+                  server_hook: bool = True) -> dict:
     """Start the headless Unsloth API with `model` loaded and block until it is ready.
 
     - GGUF repo: pass the quant tag as `variant` (e.g. "UD-Q4_K_XL").
@@ -699,6 +567,9 @@ def serve_unsloth(model: str, variant: str | None = None, port: int = 8900,
 
     Binds to localhost only (cloudflared is the only way in) and disables server-side
     tools, because the endpoint will be public. The default port 8900 avoids Jupyter's 8888.
+    `server_hook` makes the server import torch._dynamo at startup (see _server_hook_dir);
+    without it the decision model (Laya) can fail to load with "Could not import module
+    'AutoTokenizer'".
     Returns {"api_key", "port", "process"}."""
     import re
     from pathlib import Path
@@ -711,7 +582,10 @@ def serve_unsloth(model: str, variant: str | None = None, port: int = 8900,
 
     print(f"⏳ Starting Unsloth API with {model_arg} (downloads the model if needed)...")
     proc, match = _start_background(cmd, log_file, r"API Key:\s+(\S+)", timeout,
-                                    _isolated_python_env(_embedding_env(embedding_model)))
+                                    _isolated_python_env({
+                                        **_embedding_env(embedding_model),
+                                        **({"PYTHONPATH": _server_hook_dir()} if server_hook else {}),
+                                    }))
 
     # The server moves to the next free port if the requested one is taken.
     ports = re.findall(r"http://(?:127\.0\.0\.1|localhost):(\d+)", Path(log_file).read_text())
@@ -912,12 +786,6 @@ def run_llms(model: dict, embedding_model: dict | None = None,
                     load_decision_model(stack["server"]["port"], stack["api_key"], decision["name"])
             except Exception as exc:
                 print(f"⚠️  Decision API setup failed: {exc}")
-                if "Could not import module" in str(exc) or "ModuleNotFoundError" in str(exc):
-                    print("🔎 Looking for the root cause ...")
-                    try:
-                        diagnose_decision_api()
-                    except Exception as diag_exc:
-                        print(f"⚠️  Diagnosis failed: {diag_exc}")
 
             if f_tunnel:
                 stack["tunnel"] = f_tunnel.result()
