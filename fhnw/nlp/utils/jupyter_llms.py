@@ -28,7 +28,7 @@ run_llms() enables the Decision API, downloads the model and loads it onto its d
 Everything at once (recommended):
 
     stack = run_llms(
-        model={"repo": "unsloth/Qwen3.5-4B-GGUF",
+        model={"repo": "unsloth/Qwen3.5-4B-MTP-GGUF",
                "file": "Qwen3.5-4B-UD-Q4_K_XL.gguf", "variant": "UD-Q4_K_XL"},
         embedding_model={"repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
                          "file": "nomic-embed-text-v1.5.f16.gguf", "variant": "f16"},
@@ -38,7 +38,7 @@ Everything at once (recommended):
 
     # The same with the decision model configured explicitly:
     stack = run_llms(
-        model={"repo": "unsloth/Qwen3.5-4B-GGUF",
+        model={"repo": "unsloth/Qwen3.5-4B-MTP-GGUF",
                "file": "Qwen3.5-4B-UD-Q4_K_XL.gguf", "variant": "UD-Q4_K_XL"},
         embedding_model={"repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
                          "file": "nomic-embed-text-v1.5.f16.gguf", "variant": "f16"},
@@ -63,8 +63,8 @@ Step by step:
     install_unsloth(); install_hf(); install_cloudflared()
 
     # Unsloth GGUF chat model (llama.cpp)
-    download_model("unsloth/Qwen3.5-4B-GGUF", include="Qwen3.5-4B-UD-Q4_K_XL.gguf")
-    server = serve_unsloth("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL")      # port 8900 by default
+    download_model("unsloth/Qwen3.5-4B-MTP-GGUF", include="Qwen3.5-4B-UD-Q4_K_XL.gguf")
+    server = serve_unsloth("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL")      # port 8900 by default
 
     # Non-Unsloth safetensors model (transformers, 4-bit by default, needs a GPU): no file/variant
     #   download_model("Qwen/Qwen3.5-4B"); server = serve_unsloth("Qwen/Qwen3.5-4B")
@@ -73,7 +73,7 @@ Step by step:
     #   server = serve_unsloth("nomic-ai/nomic-embed-text-v1.5-GGUF", "f16")
 
     # Chat model plus embedding model side by side
-    #   server = serve_unsloth("unsloth/Qwen3.5-4B-GGUF", "UD-Q4_K_XL",
+    #   server = serve_unsloth("unsloth/Qwen3.5-4B-MTP-GGUF", "UD-Q4_K_XL",
     #                          embedding_model={"repo": "nomic-ai/nomic-embed-text-v1.5-GGUF",
     #                                           "variant": "f16"})
 
